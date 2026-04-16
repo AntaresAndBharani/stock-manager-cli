@@ -37,6 +37,6 @@ make setup
 ## Try the CLI locally
 Once installed, you can invoke the CLI from anywhere in your terminal!
 ```bash
-cli-app --help
-cli-app example hello World
+tradingtools-stock --help
+tradingtools-stock example hello World
 ```

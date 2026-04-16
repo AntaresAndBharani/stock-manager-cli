@@ -1,7 +1,7 @@
 from typer.testing import CliRunner
 
-from cli_app.core.config import __version__
-from cli_app.main import app
+from tradingtools_stock.core.config import __version__
+from tradingtools_stock.main import app
 
 
 def test_version_flag(runner: CliRunner) -> None:

@@ -5,7 +5,7 @@ import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from cli_app.core.fetcher import (
+from tradingtools_stock.core.fetcher import (
     create_tables_if_not_exist,
     fetch_stock_data,
     get_active_tickers,

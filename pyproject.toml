@@ -1,5 +1,5 @@
 [project]
-name = "cli_app"
+name = "tradingtools_stock"
 version = "0.1.0"
 description = "A world-class Python CLI template powered by Typer and rich."
 readme = "README.md"
@@ -28,14 +28,14 @@ dev = [
 ]
 
 [project.scripts]
-cli-app = "cli_app.main:app"
+tradingtools-stock = "tradingtools_stock.main:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cli_app"]
+packages = ["src/tradingtools_stock"]
 
 [tool.ruff]
 line-length = 88
@@ -56,5 +56,5 @@ warn_unused_configs = true
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-addopts = "-v --cov=cli_app --cov-report=term-missing"
+addopts = "-v --cov=tradingtools_stock --cov-report=term-missing"
 testpaths = ["tests"]
