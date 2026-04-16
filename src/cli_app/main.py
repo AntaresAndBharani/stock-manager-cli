@@ -1,7 +1,7 @@
 import typer
 from rich.console import Console
 
-from cli_app.commands import example
+from cli_app.commands import example, fetch
 from cli_app.core.config import __version__
 
 app = typer.Typer(
@@ -13,6 +13,7 @@ console = Console()
 
 # Add subcommands
 app.add_typer(example.app, name="example")
+app.add_typer(fetch.app, name="fetch")
 
 
 def version_callback(value: bool) -> None:

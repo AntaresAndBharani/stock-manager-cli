@@ -1,0 +1,402 @@
+import logging
+import os
+import time
+
+import pandas as pd
+import psycopg2
+import requests  # type: ignore
+from psycopg2.extras import execute_values
+
+# Patch requests to handle encoding before importing yahooquery
+original_text_property = requests.models.Response.text.fget
+original_content_property = requests.models.Response.content.fget
+
+
+def patched_text_property(self):
+    """Patched text property that handles encoding errors."""
+    try:
+        return original_text_property(self)
+    except UnicodeDecodeError:
+        # Fallback to latin-1 encoding with error replacement
+        return self.content.decode("latin-1", errors="replace")
+
+
+def patched_content_property(self):
+    """Patched content property that ensures proper encoding."""
+    return original_content_property(self)
+
+
+# Override the apparent_encoding to prevent auto-detection issues
+original_init = requests.models.Response.__init__
+
+
+def patched_init(self, *args, **kwargs):
+    original_init(self, *args, **kwargs)
+    # Set encoding explicitly to avoid utf-8 codec errors
+    if self.encoding is None or self.encoding == "ISO-8859-1":
+        self._encoding = "latin-1"
+
+
+requests.models.Response.__init__ = patched_init
+requests.models.Response.text = property(patched_text_property)
+
+# Now import yahooquery after patching
+import yahooquery as yq  # noqa: E402
+
+
+def get_db_connection():
+    """Create and return a database connection using environment variables."""
+    try:
+        return psycopg2.connect(
+            host=os.environ.get("DB_HOST", "localhost"),
+            database=os.environ.get("DB_NAME"),
+            user=os.environ.get("DB_USER"),
+            password=os.environ.get("DB_PASS"),
+            port=os.environ.get("DB_PORT", "5432"),
+        )
+    except UnicodeDecodeError as err:
+        # libpq may return localized Windows errors encoded with the ANSI codepage
+        raw_message = ""
+        if isinstance(err.object, (bytes, bytearray)):
+            raw_message = err.object.decode("latin-1", errors="replace")
+        friendly = (
+            "Database connection failed due to a non UTF-8 error message. "
+            "Original message: "
+            f"{raw_message or err}"
+        )
+        raise psycopg2.OperationalError(friendly) from err
+
+
+def create_tables_if_not_exist(conn):
+    """Create the stock data tables if they don't exist."""
+    logging.info("Checking/creating database tables...")
+    with conn.cursor() as cur:
+        # Create tickers table
+        logging.debug("Ensuring 'tickers' table exists")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tickers (
+                symbol VARCHAR(10) PRIMARY KEY,
+                name VARCHAR(255),
+                active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
+        # Create stock_prices table
+        logging.debug("Ensuring 'stock_prices' table exists")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stock_prices (
+                date DATE NOT NULL,
+                symbol VARCHAR(10) NOT NULL,
+                open DECIMAL(18, 6),
+                high DECIMAL(18, 6),
+                low DECIMAL(18, 6),
+                close DECIMAL(18, 6),
+                volume BIGINT,
+                quarterly_eps DECIMAL(18, 6),
+                quarterly_revenue DECIMAL(24, 2),
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (date, symbol),
+                FOREIGN KEY (symbol) REFERENCES tickers(symbol)
+            );
+            """
+        )
+
+        # Create indexes
+        logging.debug("Ensuring indexes exist")
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_stock_prices_symbol ON stock_prices(symbol);
+            CREATE INDEX IF NOT EXISTS idx_stock_prices_date ON stock_prices(date);
+            """
+        )
+
+        conn.commit()
+    logging.info("Database table initialization complete")
+
+
+def get_active_tickers(conn):
+    """
+    Fetch active tickers from the database.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        list: List of active ticker symbols (uppercase)
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT symbol FROM tickers WHERE active = %s", (True,))
+        rows = cur.fetchall()
+        return [row[0].upper() for row in rows]
+
+
+def get_existing_data_range(conn, symbol):
+    """
+    Get the min and max dates for which we have data for a ticker.
+
+    Args:
+        conn: Database connection
+        symbol: Ticker symbol
+
+    Returns:
+        tuple: (min_date, max_date) or (None, None) if no data
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MIN(date), MAX(date) FROM stock_prices WHERE symbol = %s",
+            (symbol.upper(),),
+        )
+        return cur.fetchone()
+
+
+def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False):
+    """
+    Fetch daily OHLC data for a single ticker with retry logic.
+    Optionally include historical fundamentals.
+
+    Args:
+        ticker: Stock ticker symbol
+        start_date: Start date string (YYYY-MM-DD)
+        end_date: End date string (YYYY-MM-DD)
+        include_fundamentals: Whether to include quarterly fundamentals
+
+    Returns:
+        pandas DataFrame with stock data
+    """
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            logging.debug(
+                f"Downloading data for {ticker} from {start_date} to {end_date} "
+                f"(attempt {attempt + 1})"
+            )
+
+            # Adjust end_date to be inclusive by adding one day
+            start_dt = pd.to_datetime(start_date)
+            end_dt = pd.to_datetime(end_date)
+
+            # If dates are the same, yahooquery might return no data if we don't extend
+            if start_dt == end_dt:
+                end_dt = end_dt + pd.Timedelta(days=1)
+
+            start_str = start_dt.strftime("%Y-%m-%d")
+
+            stock = yq.Ticker(ticker)
+
+            # Fetch data with encoding error handling
+            try:
+                # yahooquery end is exclusive, so we usually want end_dt + 1 day
+                # but if we already handled start==end above, we can just use end_str
+                # for the general case let's ensure end is strictly after start
+                query_end = (end_dt + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                data = stock.history(start=start_str, end=query_end, interval="1d")
+            except UnicodeDecodeError as ude:
+                logging.warning(f"UTF-8 decoding error for {ticker}: {ude}")
+                raise
+
+            # Handle potential encoding errors in the response
+            if isinstance(data, str):
+                logging.warning(
+                    f"Received string response for {ticker}, attempting to parse"
+                )
+                data = pd.DataFrame()
+
+            logging.debug(f"Data shape: {data.shape}, columns: {list(data.columns)}")
+
+            if data.empty:
+                logging.warning(f"No data found for {ticker}")
+                return pd.DataFrame()
+
+            # Reset index to get 'date' as column
+            data = data.reset_index()
+            data["symbol"] = ticker
+
+            # Standardize column names (yahooquery uses lowercase)
+            data = data.rename(
+                columns={
+                    "date": "Date",
+                    "open": "Open",
+                    "high": "High",
+                    "low": "Low",
+                    "close": "Close",
+                    "volume": "Volume",
+                }
+            )
+
+            # Fetch historical fundamentals if requested
+            if include_fundamentals:
+                try:
+                    logging.debug(f"Fetching historical fundamentals for {ticker}")
+
+                    # Get quarterly earnings (historical EPS, revenue)
+                    quarterly_earnings = stock.earning_history
+                    if (
+                        isinstance(quarterly_earnings, pd.DataFrame)
+                        and not quarterly_earnings.empty
+                    ):
+                        quarterly_earnings = quarterly_earnings.reset_index()
+                        if "quarter" in quarterly_earnings.columns:
+                            quarterly_earnings = quarterly_earnings.rename(
+                                columns={
+                                    "epsActual": "Quarterly_EPS",
+                                    "quarter": "Quarter_Date",
+                                }
+                            )
+                            # Convert quarter to datetime if needed
+                            if "Quarter_Date" in quarterly_earnings.columns:
+                                quarterly_earnings["Quarter_Date"] = pd.to_datetime(
+                                    quarterly_earnings["Quarter_Date"], errors="coerce"
+                                )
+
+                                # Keep only necessary columns
+                                cols_to_keep = ["Quarter_Date", "Quarterly_EPS"]
+                                available_cols = [
+                                    c
+                                    for c in cols_to_keep
+                                    if c in quarterly_earnings.columns
+                                ]
+                                if available_cols:
+                                    quarterly_earnings = quarterly_earnings[
+                                        available_cols
+                                    ].dropna(subset=["Quarter_Date"])
+
+                                    # Merge quarterly data with daily data
+                                    data = pd.merge_asof(
+                                        data.sort_values("Date"),
+                                        quarterly_earnings.sort_values("Quarter_Date"),
+                                        left_on="Date",
+                                        right_on="Quarter_Date",
+                                        direction="backward",
+                                    )
+                                    if "Quarter_Date" in data.columns:
+                                        data = data.drop(columns=["Quarter_Date"])
+                    else:
+                        logging.warning(f"No quarterly earnings data for {ticker}")
+                        data["Quarterly_EPS"] = None
+
+                    # Try to get revenue from financial data
+                    financials = stock.financial_data
+                    if isinstance(financials, dict) and ticker in financials:
+                        fin_data = financials[ticker]
+                        if isinstance(fin_data, dict):
+                            data["Quarterly_Revenue"] = fin_data.get(
+                                "totalRevenue", None
+                            )
+                        else:
+                            data["Quarterly_Revenue"] = None
+                    else:
+                        data["Quarterly_Revenue"] = None
+
+                except Exception as e:
+                    logging.warning(
+                        f"Failed to fetch historical fundamentals for {ticker}: {e}"
+                    )
+                    data["Quarterly_EPS"] = None
+                    data["Quarterly_Revenue"] = None
+
+            logging.debug(f"Successfully fetched {len(data)} rows for {ticker}")
+
+            # Select and return relevant columns
+            columns = ["Date", "symbol", "Open", "High", "Low", "Close", "Volume"]
+            if include_fundamentals:
+                columns.extend(["Quarterly_EPS", "Quarterly_Revenue"])
+
+            # Only keep columns that exist
+            available_columns = [c for c in columns if c in data.columns]
+            return data[available_columns]
+
+        except UnicodeDecodeError as e:
+            logging.warning(
+                f"UTF-8 decoding error for {ticker} (attempt {attempt + 1}): {e}"
+            )
+            if attempt < max_retries - 1:
+                wait_time = 2**attempt
+                logging.info(f"Retrying {ticker} in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                logging.error(
+                    f"Failed to fetch data for {ticker} after {max_retries} attempts "
+                    "due to encoding error"
+                )
+                return pd.DataFrame()
+        except Exception as e:
+            logging.warning(f"Attempt {attempt + 1} failed for {ticker}: {e}")
+            if attempt < max_retries - 1:
+                # Exponential backoff: 1, 2, 4, 8, 16 seconds
+                wait_time = 2**attempt
+                logging.info(f"Retrying {ticker} in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                logging.error(
+                    f"Failed to fetch data for {ticker} after {max_retries} attempts"
+                )
+                return pd.DataFrame()
+
+    return pd.DataFrame()
+
+
+def upsert_stock_data(conn, data, include_fundamentals=False):
+    """
+    Upsert stock data into the database to avoid duplicates.
+
+    Args:
+        conn: Database connection
+        data: pandas DataFrame with stock data
+        include_fundamentals: Whether fundamentals columns are included
+    """
+    if data.empty:
+        logging.warning("No data to insert")
+        return 0
+
+    with conn.cursor() as cur:
+        # Prepare data for insertion
+        records = []
+        for _, row in data.iterrows():
+            record = (
+                row["Date"].date() if hasattr(row["Date"], "date") else row["Date"],
+                row["symbol"],
+                float(row["Open"]) if pd.notna(row["Open"]) else None,
+                float(row["High"]) if pd.notna(row["High"]) else None,
+                float(row["Low"]) if pd.notna(row["Low"]) else None,
+                float(row["Close"]) if pd.notna(row["Close"]) else None,
+                int(row["Volume"]) if pd.notna(row["Volume"]) else None,
+                (
+                    float(row.get("Quarterly_EPS"))
+                    if include_fundamentals and pd.notna(row.get("Quarterly_EPS"))
+                    else None
+                ),
+                (
+                    float(row.get("Quarterly_Revenue"))
+                    if include_fundamentals and pd.notna(row.get("Quarterly_Revenue"))
+                    else None
+                ),
+            )
+            records.append(record)
+
+        # Upsert using ON CONFLICT
+        insert_sql = """
+            INSERT INTO stock_prices 
+                (date, symbol, open, high, low, close, volume, 
+                quarterly_eps, quarterly_revenue)
+            VALUES %s
+            ON CONFLICT (date, symbol) 
+            DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                quarterly_eps = EXCLUDED.quarterly_eps,
+                quarterly_revenue = EXCLUDED.quarterly_revenue,
+                updated_at = CURRENT_TIMESTAMP
+        """
+
+        execute_values(cur, insert_sql, records)
+        conn.commit()
+
+        logging.info(f"Upserted {len(records)} records to database")
+        return len(records)
