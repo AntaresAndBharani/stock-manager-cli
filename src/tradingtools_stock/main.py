@@ -1,11 +1,11 @@
 import typer
 from rich.console import Console
 
-from cli_app.commands import example
-from cli_app.core.config import __version__
+from tradingtools_stock.commands import example, fetch
+from tradingtools_stock.core.config import __version__
 
 app = typer.Typer(
-    name="cli-app",
+    name="tradingtools-stock",
     help="A world-class Python CLI template.",
     add_completion=False,
 )
@@ -13,11 +13,12 @@ console = Console()
 
 # Add subcommands
 app.add_typer(example.app, name="example")
+app.add_typer(fetch.app, name="fetch")
 
 
 def version_callback(value: bool) -> None:
     if value:
-        console.print(f"cli-app version: [bold cyan]{__version__}[/]")
+        console.print(f"tradingtools-stock version: [bold cyan]{__version__}[/]")
         raise typer.Exit()
 
 
