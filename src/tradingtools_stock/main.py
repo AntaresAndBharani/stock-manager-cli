@@ -1,7 +1,7 @@
 import typer
 from rich.console import Console
 
-from tradingtools_stock.commands import example, fetch
+from tradingtools_stock.commands import db, example, fetch
 from tradingtools_stock.core.config import __version__
 
 app = typer.Typer(
@@ -14,6 +14,7 @@ console = Console()
 # Add subcommands
 app.add_typer(example.app, name="example")
 app.add_typer(fetch.app, name="fetch")
+app.add_typer(db.app, name="db")
 
 
 def version_callback(value: bool) -> None:
