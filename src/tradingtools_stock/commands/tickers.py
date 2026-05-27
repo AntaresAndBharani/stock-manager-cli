@@ -98,3 +98,40 @@ def deactivate_ticker(
     finally:
         if 'conn' in locals() and conn:
             conn.close()
+
+@app.command("remove")
+def remove_ticker(
+    symbol: str = typer.Argument(..., help="The stock ticker symbol to remove completely"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force removal without prompting"),
+):
+    """
+    Remove a ticker and all its associated historical data from the database.
+    """
+    symbol = symbol.upper()
+    if not force:
+        confirm = typer.confirm(f"Are you sure you want to permanently delete {symbol} and all its historical data?")
+        if not confirm:
+            console.print("Operation cancelled.")
+            raise typer.Exit()
+            
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # First, delete from stock_prices to respect foreign key constraints
+            cur.execute("DELETE FROM stock_prices WHERE symbol = %s", (symbol,))
+            deleted_prices = cur.rowcount
+            
+            # Then, delete the ticker itself
+            cur.execute("DELETE FROM tickers WHERE symbol = %s", (symbol,))
+            if cur.rowcount > 0:
+                conn.commit()
+                console.print(f"[green]Successfully removed ticker:[/] {symbol}")
+                console.print(f"Deleted {deleted_prices} historical price records.")
+            else:
+                console.print(f"[yellow]Ticker not found in the database:[/] {symbol}")
+    except Exception as e:
+        console.print(f"[bold red]Error removing ticker:[/] {e}")
+        raise typer.Exit(1)
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
