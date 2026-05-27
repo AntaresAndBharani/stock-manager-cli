@@ -32,6 +32,13 @@ with st.spinner("Loading Heikin-Ashi data..."):
             # Display the condensed dataframe
             st.dataframe(
                 df,
+                column_config={
+                    "Price": st.column_config.NumberColumn(format="$%.2f"),
+                    "21 EMA": st.column_config.NumberColumn(format="$%.2f"),
+                    "50 SMA": st.column_config.NumberColumn(format="$%.2f"),
+                    "100 SMA": st.column_config.NumberColumn(format="$%.2f"),
+                    "200 SMA": st.column_config.NumberColumn(format="$%.2f"),
+                },
                 width='stretch',
                 hide_index=True
             )

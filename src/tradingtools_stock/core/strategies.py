@@ -31,23 +31,21 @@ def calculate_heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     
     return ha_df
 
-def fetch_and_resample(conn, symbol: str, timeframe: str) -> pd.DataFrame:
-    """
-    Fetch data for a symbol and resample it.
-    timeframe: 'M'/'ME' for month end, 'Q'/'QE' for quarter end
-    """
-    # suppress pandas UserWarning for pandas.read_sql_query when using psycopg2 connection
+def fetch_daily_data(conn, symbol: str) -> pd.DataFrame:
+    """Fetch raw daily data from the database."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         query = "SELECT date, open, high, low, close FROM stock_prices WHERE symbol = %s ORDER BY date"
         df = pd.read_sql_query(query, conn, params=(symbol,), parse_dates=['date'])
-    
+    if not df.empty:
+        df.set_index('date', inplace=True)
+    return df
+
+def resample_and_calculate_ha(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    """Resample daily dataframe and calculate Heikin-Ashi."""
     if df.empty:
         return df
         
-    df.set_index('date', inplace=True)
-    
-    # Resample
     try:
         resampled = df.resample(timeframe).agg({
             'open': 'first',
@@ -56,7 +54,7 @@ def fetch_and_resample(conn, symbol: str, timeframe: str) -> pd.DataFrame:
             'close': 'last'
         }).dropna()
     except ValueError:
-        # Fallback to older pandas alias (e.g., M instead of ME, Q instead of QE)
+        # Fallback to older pandas alias
         alt_tf = timeframe.replace('E', '')
         resampled = df.resample(alt_tf).agg({
             'open': 'first',
@@ -65,9 +63,7 @@ def fetch_and_resample(conn, symbol: str, timeframe: str) -> pd.DataFrame:
             'close': 'last'
         }).dropna()
     
-    # Rename columns to match HA function
     resampled.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
-    
     return calculate_heikin_ashi(resampled)
 
 def get_dashboard_data(conn) -> pd.DataFrame:
@@ -81,8 +77,19 @@ def get_dashboard_data(conn) -> pd.DataFrame:
     results = []
     for ticker in tickers:
         try:
-            df_1m = fetch_and_resample(conn, ticker, 'ME')
-            df_3m = fetch_and_resample(conn, ticker, 'QE')
+            df_daily = fetch_daily_data(conn, ticker)
+            if df_daily.empty:
+                continue
+                
+            # Daily Indicators
+            price = df_daily['close'].iloc[-1]
+            ema21 = df_daily['close'].ewm(span=21, adjust=False).mean().iloc[-1]
+            sma50 = df_daily['close'].rolling(window=50).mean().iloc[-1]
+            sma100 = df_daily['close'].rolling(window=100).mean().iloc[-1]
+            sma200 = df_daily['close'].rolling(window=200).mean().iloc[-1]
+            
+            df_1m = resample_and_calculate_ha(df_daily, 'ME')
+            df_3m = resample_and_calculate_ha(df_daily, 'QE')
             
             def get_last_3_colors(df):
                 colors = df['HA_Color'].tolist()
@@ -103,9 +110,11 @@ def get_dashboard_data(conn) -> pd.DataFrame:
                 return ' '.join(emojis)
                 
             # Signal logic
-            # Entry Trigger: 1M T-1 is Red AND 1M Current is Green
+            # Entry Trigger: 1M T-1 is Red AND 1M Current is Green AND Daily Momentum Filter
+            daily_momentum_ok = (price > sma200) and (ema21 > sma200) and (sma50 > sma200) and (sma100 > sma200)
+            
             signal = "⚪ None"
-            if colors_1m[1] == 'Red' and colors_1m[2] == 'Green':
+            if colors_1m[1] == 'Red' and colors_1m[2] == 'Green' and daily_momentum_ok:
                 if colors_3m[1] == 'Red':
                     signal = "🟡 Weak Entry"
                 else:
@@ -116,6 +125,11 @@ def get_dashboard_data(conn) -> pd.DataFrame:
                 'Signal': signal,
                 '1M Trend': format_trend(colors_1m),
                 '3M Trend': format_trend(colors_3m),
+                'Price': price,
+                '21 EMA': ema21,
+                '50 SMA': sma50,
+                '100 SMA': sma100,
+                '200 SMA': sma200,
             })
         except Exception as e:
             print(f"Error processing {ticker}: {e}")
