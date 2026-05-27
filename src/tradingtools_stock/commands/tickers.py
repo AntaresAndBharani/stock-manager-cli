@@ -1,6 +1,7 @@
 import typer
 from rich.console import Console
 from rich.table import Table
+from pathlib import Path
 
 from tradingtools_stock.core.fetcher import get_db_connection
 
@@ -131,6 +132,59 @@ def remove_ticker(
                 console.print(f"[yellow]Ticker not found in the database:[/] {symbol}")
     except Exception as e:
         console.print(f"[bold red]Error removing ticker:[/] {e}")
+        raise typer.Exit(1)
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
+@app.command("import")
+def import_tickers(
+    file_path: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Path to the CSV file containing tickers"
+    )
+):
+    """
+    Bulk import tickers from a CSV file (single column with tickers).
+    """
+    tickers_to_add = set()
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                # Clean up the line (remove whitespace, quotes, commas)
+                symbol = line.strip().strip(",").strip('"').strip("'").upper()
+                # Skip empty lines or common header names
+                if symbol and symbol.lower() not in ["ticker", "symbol", "name"]:
+                    tickers_to_add.add(symbol)
+    except Exception as e:
+        console.print(f"[bold red]Error reading file:[/] {e}")
+        raise typer.Exit(1)
+        
+    if not tickers_to_add:
+        console.print("[yellow]No valid tickers found in the file.[/]")
+        raise typer.Exit()
+        
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            for symbol in tickers_to_add:
+                cur.execute(
+                    """
+                    INSERT INTO tickers (symbol, name, active)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (symbol) DO UPDATE SET active = true
+                    """,
+                    (symbol, "", True)
+                )
+            conn.commit()
+        console.print(f"[green]Successfully imported and activated {len(tickers_to_add)} tickers.[/]")
+    except Exception as e:
+        console.print(f"[bold red]Error bulk adding tickers:[/] {e}")
         raise typer.Exit(1)
     finally:
         if 'conn' in locals() and conn:
