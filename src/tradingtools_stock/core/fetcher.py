@@ -353,6 +353,18 @@ def upsert_stock_data(conn, data, include_fundamentals=False):
         return 0
 
     with conn.cursor() as cur:
+        # Ensure all unique symbols in data are in the tickers table
+        unique_symbols = data["symbol"].unique()
+        for sym in unique_symbols:
+            cur.execute(
+                """
+                INSERT INTO tickers (symbol, name, active)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (symbol) DO NOTHING
+                """,
+                (sym, sym, True)
+            )
+
         # Prepare data for insertion
         records = []
         for _, row in data.iterrows():
