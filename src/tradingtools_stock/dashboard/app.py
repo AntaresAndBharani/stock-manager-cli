@@ -29,18 +29,10 @@ with st.spinner("Loading Heikin-Ashi data..."):
                 load_data.clear()
                 st.rerun()
                 
-            # Color formatter
-            def color_cells(val):
-                if val == 'Green':
-                    return 'background-color: rgba(30, 200, 30, 0.2); color: #00ff00; font-weight: bold; text-align: center;'
-                elif val == 'Red':
-                    return 'background-color: rgba(255, 30, 30, 0.2); color: #ff5555; font-weight: bold; text-align: center;'
-                return 'text-align: center;'
-                
-            # Apply styling
+            # Display the condensed dataframe
             st.dataframe(
-                df.style.map(color_cells, subset=df.columns[1:]),
-                use_container_width=True,
+                df,
+                width='stretch',
                 hide_index=True
             )
             

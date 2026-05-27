@@ -91,16 +91,40 @@ def get_dashboard_data(conn) -> pd.DataFrame:
             colors_1m = get_last_3_colors(df_1m) if not df_1m.empty else [None, None, None]
             colors_3m = get_last_3_colors(df_3m) if not df_3m.empty else [None, None, None]
             
+            def format_trend(colors):
+                emojis = []
+                for c in colors:
+                    if c == 'Green':
+                        emojis.append('🟩')
+                    elif c == 'Red':
+                        emojis.append('🟥')
+                    else:
+                        emojis.append('⬜')
+                return ' '.join(emojis)
+                
+            # Signal logic
+            # Entry Trigger: 1M T-1 is Red AND 1M Current is Green
+            signal = "⚪ None"
+            if colors_1m[1] == 'Red' and colors_1m[2] == 'Green':
+                if colors_3m[1] == 'Red':
+                    signal = "🟡 Weak Entry"
+                else:
+                    signal = "🟢 Strong Entry"
+            
             results.append({
                 'Ticker': ticker,
-                '1M: T-2': colors_1m[0],
-                '1M: T-1': colors_1m[1],
-                '1M: Current': colors_1m[2],
-                '3M: T-2': colors_3m[0],
-                '3M: T-1': colors_3m[1],
-                '3M: Current': colors_3m[2],
+                'Signal': signal,
+                '1M Trend': format_trend(colors_1m),
+                '3M Trend': format_trend(colors_3m),
             })
         except Exception as e:
             print(f"Error processing {ticker}: {e}")
             
-    return pd.DataFrame(results)
+    df_results = pd.DataFrame(results)
+    if not df_results.empty:
+        # Sort so Strong Entry > Weak Entry > None
+        signal_order = {"🟢 Strong Entry": 0, "🟡 Weak Entry": 1, "⚪ None": 2}
+        df_results['_sort'] = df_results['Signal'].map(signal_order)
+        df_results = df_results.sort_values(['_sort', 'Ticker']).drop(columns=['_sort']).reset_index(drop=True)
+        
+    return df_results
