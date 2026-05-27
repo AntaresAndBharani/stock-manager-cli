@@ -16,20 +16,32 @@ def add_ticker(
     """
     Add a new ticker to the database to be tracked.
     """
-    symbol = symbol.upper()
+    # Parse MARKET:SYMBOL
+    market = None
+    if ':' in symbol:
+        parts = symbol.split(':', 1)
+        market = parts[0].strip().upper()
+        symbol = parts[1].strip().upper()
+    else:
+        symbol = symbol.upper()
+
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO tickers (symbol, name, active)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (symbol) DO UPDATE SET active = true
+                INSERT INTO tickers (symbol, name, market, active)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (symbol) DO UPDATE SET 
+                    active = true,
+                    market = COALESCE(NULLIF(EXCLUDED.market, ''), tickers.market)
                 """,
-                (symbol, name, True)
+                (symbol, name, market, True)
             )
             conn.commit()
-        console.print(f"[green]Successfully added/activated ticker:[/] {symbol}")
+        
+        display_sym = f"{market}:{symbol}" if market else symbol
+        console.print(f"[green]Successfully added/activated ticker:[/] {display_sym}")
     except Exception as e:
         console.print(f"[bold red]Error adding ticker:[/] {e}")
         raise typer.Exit(1)
@@ -48,9 +60,9 @@ def list_tickers(
         conn = get_db_connection()
         with conn.cursor() as cur:
             if all_tickers:
-                cur.execute("SELECT symbol, name, active, created_at FROM tickers ORDER BY symbol")
+                cur.execute("SELECT symbol, name, market, active, created_at FROM tickers ORDER BY symbol")
             else:
-                cur.execute("SELECT symbol, name, active, created_at FROM tickers WHERE active = true ORDER BY symbol")
+                cur.execute("SELECT symbol, name, market, active, created_at FROM tickers WHERE active = true ORDER BY symbol")
             rows = cur.fetchall()
             
             if not rows:
@@ -59,14 +71,16 @@ def list_tickers(
 
             table = Table(title="Tracked Tickers")
             table.add_column("Symbol", style="cyan", no_wrap=True)
+            table.add_column("Market", style="yellow")
             table.add_column("Name", style="magenta")
             table.add_column("Status", style="green")
             table.add_column("Added On", style="dim")
 
             for row in rows:
-                status = "[green]Active[/]" if row[2] else "[red]Inactive[/]"
-                added_date = row[3].strftime("%Y-%m-%d") if row[3] else "Unknown"
-                table.add_row(row[0], row[1] or "", status, added_date)
+                status = "[green]Active[/]" if row[3] else "[red]Inactive[/]"
+                added_date = row[4].strftime("%Y-%m-%d") if row[4] else "Unknown"
+                market_val = row[2] or ""
+                table.add_row(row[0], market_val, row[1] or "", status, added_date)
             
             console.print(table)
     except Exception as e:
@@ -150,17 +164,28 @@ def import_tickers(
     )
 ):
     """
-    Bulk import tickers from a CSV file (single column with tickers).
+    Bulk import tickers from a CSV file.
+    Supports symbols with or without markets (e.g., AAPL or NASDAQ:AAPL).
     """
-    tickers_to_add = set()
+    tickers_to_add = []
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
                 # Clean up the line (remove whitespace, quotes, commas)
-                symbol = line.strip().strip(",").strip('"').strip("'").upper()
-                # Skip empty lines or common header names
-                if symbol and symbol.lower() not in ["ticker", "symbol", "name"]:
-                    tickers_to_add.add(symbol)
+                raw = line.strip().strip(",").strip('"').strip("'")
+                if not raw:
+                    continue
+                if raw.lower() in ["ticker", "symbol", "name"]:
+                    continue
+                    
+                market = None
+                symbol = raw.upper()
+                if ':' in symbol:
+                    parts = symbol.split(':', 1)
+                    market = parts[0].strip()
+                    symbol = parts[1].strip()
+                    
+                tickers_to_add.append((symbol, market))
     except Exception as e:
         console.print(f"[bold red]Error reading file:[/] {e}")
         raise typer.Exit(1)
@@ -172,14 +197,16 @@ def import_tickers(
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
-            for symbol in tickers_to_add:
+            for symbol, market in tickers_to_add:
                 cur.execute(
                     """
-                    INSERT INTO tickers (symbol, name, active)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (symbol) DO UPDATE SET active = true
+                    INSERT INTO tickers (symbol, name, market, active)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (symbol) DO UPDATE SET 
+                        active = true,
+                        market = COALESCE(NULLIF(EXCLUDED.market, ''), tickers.market)
                     """,
-                    (symbol, "", True)
+                    (symbol, "", market, True)
                 )
             conn.commit()
         console.print(f"[green]Successfully imported and activated {len(tickers_to_add)} tickers.[/]")

@@ -83,6 +83,14 @@ def create_tables_if_not_exist(conn):
             );
             """
         )
+        
+        # Add market column if it doesn't exist
+        logging.debug("Ensuring 'market' column exists on tickers table")
+        cur.execute(
+            """
+            ALTER TABLE tickers ADD COLUMN IF NOT EXISTS market VARCHAR(50);
+            """
+        )
 
         # Create stock_prices table
         logging.debug("Ensuring 'stock_prices' table exists")
