@@ -29,9 +29,28 @@ with st.spinner("Loading Heikin-Ashi data..."):
                 load_data.clear()
                 st.rerun()
                 
+            # Color formatter for Daily MAs relative to 200 SMA
+            def highlight_mas(row):
+                sma200 = row['200 SMA']
+                styles = [''] * len(row)
+                cols_to_check = ['Price', '21 EMA', '50 SMA', '100 SMA']
+                
+                for col in cols_to_check:
+                    if col in row.index:
+                        idx = row.index.get_loc(col)
+                        if pd.isna(row[col]) or pd.isna(sma200):
+                            continue
+                        if row[col] < sma200:
+                            styles[idx] = 'color: #ff5555; font-weight: bold;'  # Red
+                        else:
+                            styles[idx] = 'color: #00ff00; font-weight: bold;'  # Green
+                return styles
+                
+            styled_df = df.style.apply(highlight_mas, axis=1)
+                
             # Display the condensed dataframe
             st.dataframe(
-                df,
+                styled_df,
                 column_config={
                     "Price": st.column_config.NumberColumn(format="$%.2f"),
                     "21 EMA": st.column_config.NumberColumn(format="$%.2f"),
