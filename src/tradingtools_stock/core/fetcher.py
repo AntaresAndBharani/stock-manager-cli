@@ -142,6 +142,49 @@ def get_active_tickers(conn):
         return [row[0].upper() for row in rows]
 
 
+def get_active_tickers_with_markets(conn, symbols=None):
+    """
+    Fetch active tickers and their markets from the database.
+
+    Args:
+        conn: Database connection
+        symbols: Optional list of symbols to filter by
+
+    Returns:
+        list: List of dicts with 'symbol' and 'market'
+    """
+    with conn.cursor() as cur:
+        if symbols:
+            cur.execute("SELECT symbol, market FROM tickers WHERE symbol = ANY(%s) AND active = %s", (list(symbols), True))
+        else:
+            cur.execute("SELECT symbol, market FROM tickers WHERE active = %s", (True,))
+        rows = cur.fetchall()
+        return [{"symbol": row[0].upper(), "market": row[1].upper() if row[1] else None} for row in rows]
+
+
+def format_yahoo_ticker(symbol: str, market: str) -> str:
+    """Format the ticker symbol for Yahoo Finance based on the market."""
+    if not market:
+        return symbol
+    
+    market = market.upper()
+    mapping = {
+        "LSE": ".L",
+        "BME": ".MC",
+        "XETR": ".DE",
+        "GETTEX": ".DE",
+        "MIL": ".MI",
+        "SIX": ".SW",
+        "TSX": ".TO",
+        "OMXSTO": ".ST",
+        "EURONEXT": ".PA",
+        "LSIN": ".IL",
+    }
+    
+    suffix = mapping.get(market, "")
+    return f"{symbol}{suffix}"
+
+
 def get_existing_data_range(conn, symbol):
     """
     Get the min and max dates for which we have data for a ticker.
@@ -161,7 +204,7 @@ def get_existing_data_range(conn, symbol):
         return cur.fetchone()
 
 
-def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False):
+def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False, yahoo_ticker=None):
     """
     Fetch daily OHLC data for a single ticker with retry logic.
     Optionally include historical fundamentals.
@@ -193,7 +236,8 @@ def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False):
 
             start_str = start_dt.strftime("%Y-%m-%d")
 
-            stock = yq.Ticker(ticker)
+            query_ticker = yahoo_ticker if yahoo_ticker else ticker
+            stock = yq.Ticker(query_ticker)
 
             # Fetch data with encoding error handling
             try:

@@ -8,7 +8,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from tradingtools_stock.core.fetcher import (
     create_tables_if_not_exist,
     fetch_stock_data,
-    get_active_tickers,
+    get_active_tickers_with_markets,
+    format_yahoo_ticker,
     get_db_connection,
     get_existing_data_range,
     psycopg2,
@@ -76,8 +77,8 @@ def update(
 
         create_tables_if_not_exist(conn)
 
-        tickers_to_process = tickers if tickers else get_active_tickers(conn)
-        if not tickers_to_process:
+        tickers_with_markets = get_active_tickers_with_markets(conn, tickers)
+        if not tickers_with_markets:
             console.print(
                 "[red]No active tickers found in the database. "
                 "Provide via --tickers.[/]"
@@ -85,7 +86,7 @@ def update(
             raise typer.Exit(1)
 
         console.print(
-            f"Processing {len(tickers_to_process)} tickers: {tickers_to_process}"
+            f"Processing {len(tickers_with_markets)} tickers."
         )
 
         total_records = 0
@@ -98,10 +99,14 @@ def update(
             console=console,
         ) as progress:
             task = progress.add_task(
-                "[cyan]Fetching stock data...", total=len(tickers_to_process)
+                "[cyan]Fetching stock data...", total=len(tickers_with_markets)
             )
 
-            for ticker in tickers_to_process:
+            for ticker_info in tickers_with_markets:
+                ticker = ticker_info["symbol"]
+                market = ticker_info["market"]
+                yahoo_ticker = format_yahoo_ticker(ticker, market)
+                
                 progress.update(task, description=f"[cyan]Processing {ticker}...")
 
                 db_min, db_max = get_existing_data_range(conn, ticker)
@@ -134,6 +139,7 @@ def update(
                         f_start.strftime("%Y-%m-%d"),
                         f_end.strftime("%Y-%m-%d"),
                         include_fundamentals,
+                        yahoo_ticker,
                     )
 
                     if not data.empty:
