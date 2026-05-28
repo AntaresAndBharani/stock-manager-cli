@@ -113,6 +113,27 @@ def create_tables_if_not_exist(conn):
             """
         )
 
+        # Create dashboard_cache table
+        logging.debug("Ensuring 'dashboard_cache' table exists")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_cache (
+                symbol VARCHAR(10) PRIMARY KEY,
+                calculation_date DATE,
+                signal VARCHAR(50),
+                trend_1m VARCHAR(50),
+                trend_3m VARCHAR(50),
+                price DECIMAL(18, 6),
+                ema_21 DECIMAL(18, 6),
+                sma_50 DECIMAL(18, 6),
+                sma_100 DECIMAL(18, 6),
+                sma_200 DECIMAL(18, 6),
+                sma_1000_touch VARCHAR(50),
+                FOREIGN KEY (symbol) REFERENCES tickers(symbol)
+            );
+            """
+        )
+
         # Create indexes
         logging.debug("Ensuring indexes exist")
         cur.execute(
