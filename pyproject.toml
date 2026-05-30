@@ -1,5 +1,5 @@
 [project]
-name = "tradingtools_stock"
+name = "stock-manager-cli"
 version = "0.1.0"
 description = "A world-class Python CLI template powered by Typer and rich."
 readme = "README.md"
@@ -29,7 +29,7 @@ dev = [
 ]
 
 [project.scripts]
-tradingtools-stock = "tradingtools_stock.main:app"
+stock-manager-cli = "tradingtools_stock.main:app"
 
 [build-system]
 requires = ["hatchling"]
