@@ -83,6 +83,14 @@ def create_tables_if_not_exist(conn):
             );
             """
         )
+        
+        # Add market column if it doesn't exist
+        logging.debug("Ensuring 'market' column exists on tickers table")
+        cur.execute(
+            """
+            ALTER TABLE tickers ADD COLUMN IF NOT EXISTS market VARCHAR(50);
+            """
+        )
 
         # Create stock_prices table
         logging.debug("Ensuring 'stock_prices' table exists")
@@ -100,6 +108,27 @@ def create_tables_if_not_exist(conn):
                 quarterly_revenue DECIMAL(24, 2),
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (date, symbol),
+                FOREIGN KEY (symbol) REFERENCES tickers(symbol)
+            );
+            """
+        )
+
+        # Create dashboard_cache table
+        logging.debug("Ensuring 'dashboard_cache' table exists")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_cache (
+                symbol VARCHAR(10) PRIMARY KEY,
+                calculation_date DATE,
+                signal VARCHAR(50),
+                trend_1m VARCHAR(50),
+                trend_3m VARCHAR(50),
+                price DECIMAL(18, 6),
+                ema_21 DECIMAL(18, 6),
+                sma_50 DECIMAL(18, 6),
+                sma_100 DECIMAL(18, 6),
+                sma_200 DECIMAL(18, 6),
+                sma_1000_touch VARCHAR(50),
                 FOREIGN KEY (symbol) REFERENCES tickers(symbol)
             );
             """
@@ -134,6 +163,49 @@ def get_active_tickers(conn):
         return [row[0].upper() for row in rows]
 
 
+def get_active_tickers_with_markets(conn, symbols=None):
+    """
+    Fetch active tickers and their markets from the database.
+
+    Args:
+        conn: Database connection
+        symbols: Optional list of symbols to filter by
+
+    Returns:
+        list: List of dicts with 'symbol' and 'market'
+    """
+    with conn.cursor() as cur:
+        if symbols:
+            cur.execute("SELECT symbol, market FROM tickers WHERE symbol = ANY(%s) AND active = %s", (list(symbols), True))
+        else:
+            cur.execute("SELECT symbol, market FROM tickers WHERE active = %s", (True,))
+        rows = cur.fetchall()
+        return [{"symbol": row[0].upper(), "market": row[1].upper() if row[1] else None} for row in rows]
+
+
+def format_yahoo_ticker(symbol: str, market: str) -> str:
+    """Format the ticker symbol for Yahoo Finance based on the market."""
+    if not market:
+        return symbol
+    
+    market = market.upper()
+    mapping = {
+        "LSE": ".L",
+        "BME": ".MC",
+        "XETR": ".DE",
+        "GETTEX": ".DE",
+        "MIL": ".MI",
+        "SIX": ".SW",
+        "TSX": ".TO",
+        "OMXSTO": ".ST",
+        "EURONEXT": ".PA",
+        "LSIN": ".IL",
+    }
+    
+    suffix = mapping.get(market, "")
+    return f"{symbol}{suffix}"
+
+
 def get_existing_data_range(conn, symbol):
     """
     Get the min and max dates for which we have data for a ticker.
@@ -153,7 +225,7 @@ def get_existing_data_range(conn, symbol):
         return cur.fetchone()
 
 
-def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False):
+def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False, yahoo_ticker=None):
     """
     Fetch daily OHLC data for a single ticker with retry logic.
     Optionally include historical fundamentals.
@@ -185,7 +257,8 @@ def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False):
 
             start_str = start_dt.strftime("%Y-%m-%d")
 
-            stock = yq.Ticker(ticker)
+            query_ticker = yahoo_ticker if yahoo_ticker else ticker
+            stock = yq.Ticker(query_ticker)
 
             # Fetch data with encoding error handling
             try:
@@ -353,6 +426,18 @@ def upsert_stock_data(conn, data, include_fundamentals=False):
         return 0
 
     with conn.cursor() as cur:
+        # Ensure all unique symbols in data are in the tickers table
+        unique_symbols = data["symbol"].unique()
+        for sym in unique_symbols:
+            cur.execute(
+                """
+                INSERT INTO tickers (symbol, name, active)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (symbol) DO NOTHING
+                """,
+                (sym, sym, True)
+            )
+
         # Prepare data for insertion
         records = []
         for _, row in data.iterrows():

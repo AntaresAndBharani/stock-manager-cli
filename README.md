@@ -34,6 +34,20 @@ make setup
 - `make test`: Run pytest suite.
 - `make check`: Run format, lint, and tests all at once.
 
+## Database Configuration
+
+Before running commands that require a database connection (like the dashboard), you need to set up your environment variables. 
+
+In PowerShell, you can set them for your current session like this:
+
+```powershell
+$env:DB_NAME="fractanomicsdb"
+$env:DB_USER="postgres"
+$env:DB_PASS="postgres"
+$env:DB_HOST="localhost"
+$env:DB_PORT="5433"
+```
+
 ## Try the CLI locally
 Once installed, you can invoke the CLI from anywhere in your terminal!
 ```bash
