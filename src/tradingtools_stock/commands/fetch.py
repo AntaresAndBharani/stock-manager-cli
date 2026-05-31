@@ -12,9 +12,11 @@ from tradingtools_stock.core.fetcher import (
     format_yahoo_ticker,
     get_db_connection,
     get_existing_data_range,
+    get_all_existing_data_ranges,
     psycopg2,
     upsert_stock_data,
 )
+import concurrent.futures
 
 app = typer.Typer(help="Fetch and save stock data.")
 console = Console()
@@ -50,6 +52,12 @@ def update(
         False,
         "--debug",
         help="Enable debug logging.",
+    ),
+    workers: int = typer.Option(
+        10,
+        "--workers",
+        "-w",
+        help="Number of concurrent workers for fetching data.",
     ),
 ):
     """
@@ -102,14 +110,17 @@ def update(
                 "[cyan]Fetching stock data...", total=len(tickers_with_markets)
             )
 
+            # Pre-calculate fetch tasks
+            db_ranges = get_all_existing_data_ranges(conn, [t["symbol"] for t in tickers_with_markets])
+            
+            fetch_tasks = []
+            
             for ticker_info in tickers_with_markets:
                 ticker = ticker_info["symbol"]
                 market = ticker_info["market"]
                 yahoo_ticker = format_yahoo_ticker(ticker, market)
                 
-                progress.update(task, description=f"[cyan]Processing {ticker}...")
-
-                db_min, db_max = get_existing_data_range(conn, ticker)
+                db_min, db_max = db_ranges.get(ticker, (None, None))
                 req_start = datetime.strptime(start_dt, "%Y-%m-%d").date()
                 req_end = datetime.strptime(end_dt, "%Y-%m-%d").date()
 
@@ -130,9 +141,20 @@ def update(
                     successful_tickers.append(ticker)
                     progress.advance(task)
                     continue
+                    
+                fetch_tasks.append({
+                    "ticker": ticker,
+                    "market": market,
+                    "yahoo_ticker": yahoo_ticker,
+                    "fetch_ranges": fetch_ranges
+                })
 
+            def fetch_for_ticker(task_info):
+                ticker = task_info["ticker"]
+                yahoo_ticker = task_info["yahoo_ticker"]
+                fetch_ranges = task_info["fetch_ranges"]
+                
                 ticker_data_accumulated = []
-
                 for f_start, f_end in fetch_ranges:
                     data = fetch_stock_data(
                         ticker,
@@ -141,29 +163,39 @@ def update(
                         include_fundamentals,
                         yahoo_ticker,
                     )
-
                     if not data.empty:
                         ticker_data_accumulated.append(data)
-
+                        
+                import pandas as pd
                 if ticker_data_accumulated:
-                    import pandas as pd
-
-                    combined_data = pd.concat(ticker_data_accumulated)
-                    records = upsert_stock_data(
-                        conn, combined_data, include_fundamentals
-                    )
-                    total_records += records
-                    successful_tickers.append(ticker)
-                    progress.console.print(
-                        f"[green]✓ Saved {records} new records for {ticker}[/]"
-                    )
+                    return ticker, pd.concat(ticker_data_accumulated)
                 else:
-                    successful_tickers.append(ticker)
-                    progress.console.print(
-                        f"[yellow]⚠ No new data returned for {ticker}[/]"
-                    )
+                    return ticker, pd.DataFrame()
 
-                progress.advance(task)
+            if fetch_tasks:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_to_ticker = {
+                        executor.submit(fetch_for_ticker, task_info): task_info["ticker"]
+                        for task_info in fetch_tasks
+                    }
+                    
+                    for future in concurrent.futures.as_completed(future_to_ticker):
+                        ticker = future_to_ticker[future]
+                        try:
+                            returned_ticker, combined_data = future.result()
+                            if not combined_data.empty:
+                                records = upsert_stock_data(conn, combined_data, include_fundamentals)
+                                total_records += records
+                                successful_tickers.append(ticker)
+                                progress.console.print(f"[green]✓ Saved {records} new records for {ticker}[/]")
+                            else:
+                                successful_tickers.append(ticker)
+                                progress.console.print(f"[yellow]⚠ No new data returned for {ticker}[/]")
+                        except Exception as exc:
+                            failed_tickers.append(ticker)
+                            progress.console.print(f"[red]✗ Error processing {ticker}: {exc}[/]")
+                        finally:
+                            progress.advance(task)
 
         console.print("\n[bold]Summary[/bold]")
         console.print(f"Total Records Inserted: {total_records}")

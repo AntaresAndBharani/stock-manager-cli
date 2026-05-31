@@ -225,6 +225,30 @@ def get_existing_data_range(conn, symbol):
         return cur.fetchone()
 
 
+def get_all_existing_data_ranges(conn, symbols):
+    """
+    Get the min and max dates for which we have data for multiple tickers.
+
+    Args:
+        conn: Database connection
+        symbols: List of ticker symbols
+
+    Returns:
+        dict: Mapping of symbol to (min_date, max_date)
+    """
+    if not symbols:
+        return {}
+        
+    symbols_upper = [s.upper() for s in symbols]
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT symbol, MIN(date), MAX(date) FROM stock_prices WHERE symbol = ANY(%s) GROUP BY symbol",
+            (symbols_upper,),
+        )
+        rows = cur.fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+
 def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False, yahoo_ticker=None):
     """
     Fetch daily OHLC data for a single ticker with retry logic.
