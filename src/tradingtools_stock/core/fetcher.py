@@ -8,8 +8,8 @@ import requests  # type: ignore
 from psycopg2.extras import execute_values
 
 # Patch requests to handle encoding before importing yahooquery
-original_text_property = requests.models.Response.text.fget
-original_content_property = requests.models.Response.content.fget
+original_text_property = requests.models.Response.text.fget  # type: ignore
+original_content_property = requests.models.Response.content.fget  # type: ignore
 
 
 def patched_text_property(self):
@@ -37,8 +37,8 @@ def patched_init(self, *args, **kwargs):
         self._encoding = "latin-1"
 
 
-requests.models.Response.__init__ = patched_init
-requests.models.Response.text = property(patched_text_property)
+requests.models.Response.__init__ = patched_init  # type: ignore
+requests.models.Response.text = property(patched_text_property)  # type: ignore
 
 # Now import yahooquery after patching
 import yahooquery as yq  # noqa: E402
@@ -83,7 +83,7 @@ def create_tables_if_not_exist(conn):
             );
             """
         )
-        
+
         # Add market column if it doesn't exist
         logging.debug("Ensuring 'market' column exists on tickers table")
         cur.execute(
@@ -176,18 +176,24 @@ def get_active_tickers_with_markets(conn, symbols=None):
     """
     with conn.cursor() as cur:
         if symbols:
-            cur.execute("SELECT symbol, market FROM tickers WHERE symbol = ANY(%s) AND active = %s", (list(symbols), True))
+            cur.execute(
+                "SELECT symbol, market FROM tickers WHERE symbol = ANY(%s) AND active = %s",
+                (list(symbols), True),
+            )
         else:
             cur.execute("SELECT symbol, market FROM tickers WHERE active = %s", (True,))
         rows = cur.fetchall()
-        return [{"symbol": row[0].upper(), "market": row[1].upper() if row[1] else None} for row in rows]
+        return [
+            {"symbol": row[0].upper(), "market": row[1].upper() if row[1] else None}
+            for row in rows
+        ]
 
 
 def format_yahoo_ticker(symbol: str, market: str) -> str:
     """Format the ticker symbol for Yahoo Finance based on the market."""
     if not market:
         return symbol
-    
+
     market = market.upper()
     mapping = {
         "LSE": ".L",
@@ -201,7 +207,7 @@ def format_yahoo_ticker(symbol: str, market: str) -> str:
         "EURONEXT": ".PA",
         "LSIN": ".IL",
     }
-    
+
     suffix = mapping.get(market, "")
     return f"{symbol}{suffix}"
 
@@ -225,6 +231,22 @@ def get_existing_data_range(conn, symbol):
         return cur.fetchone()
 
 
+def get_global_max_date(conn):
+    """
+    Get the overall maximum date for which we have any stock data.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        datetime.date: The maximum date, or None if no data exists.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT MAX(date) FROM stock_prices")
+        result = cur.fetchone()
+        return result[0] if result and result[0] else None
+
+
 def get_all_existing_data_ranges(conn, symbols):
     """
     Get the min and max dates for which we have data for multiple tickers.
@@ -238,7 +260,7 @@ def get_all_existing_data_ranges(conn, symbols):
     """
     if not symbols:
         return {}
-        
+
     symbols_upper = [s.upper() for s in symbols]
     with conn.cursor() as cur:
         cur.execute(
@@ -249,7 +271,9 @@ def get_all_existing_data_ranges(conn, symbols):
         return {row[0]: (row[1], row[2]) for row in rows}
 
 
-def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False, yahoo_ticker=None):
+def fetch_stock_data(
+    ticker, start_date, end_date, include_fundamentals=False, yahoo_ticker=None
+):
     """
     Fetch daily OHLC data for a single ticker with retry logic.
     Optionally include historical fundamentals.
@@ -459,7 +483,7 @@ def upsert_stock_data(conn, data, include_fundamentals=False):
                 VALUES (%s, %s, %s)
                 ON CONFLICT (symbol) DO NOTHING
                 """,
-                (sym, sym, True)
+                (sym, sym, True),
             )
 
         # Prepare data for insertion
