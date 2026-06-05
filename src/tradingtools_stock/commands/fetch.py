@@ -1,6 +1,6 @@
+import concurrent.futures
 import logging
 from datetime import datetime, timedelta
-import concurrent.futures
 
 import typer
 from rich.console import Console
@@ -10,11 +10,10 @@ from rich.table import Table
 from tradingtools_stock.core.fetcher import (
     create_tables_if_not_exist,
     fetch_stock_data,
-    get_active_tickers_with_markets,
     format_yahoo_ticker,
-    get_db_connection,
-    get_existing_data_range,
+    get_active_tickers_with_markets,
     get_all_existing_data_ranges,
+    get_db_connection,
     get_global_max_date,
     psycopg2,
     upsert_stock_data,

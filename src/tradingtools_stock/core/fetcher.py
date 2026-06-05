@@ -83,7 +83,7 @@ def create_tables_if_not_exist(conn):
             );
             """
         )
-        
+
         # Add market column if it doesn't exist
         logging.debug("Ensuring 'market' column exists on tickers table")
         cur.execute(
@@ -176,18 +176,24 @@ def get_active_tickers_with_markets(conn, symbols=None):
     """
     with conn.cursor() as cur:
         if symbols:
-            cur.execute("SELECT symbol, market FROM tickers WHERE symbol = ANY(%s) AND active = %s", (list(symbols), True))
+            cur.execute(
+                "SELECT symbol, market FROM tickers WHERE symbol = ANY(%s) AND active = %s",
+                (list(symbols), True),
+            )
         else:
             cur.execute("SELECT symbol, market FROM tickers WHERE active = %s", (True,))
         rows = cur.fetchall()
-        return [{"symbol": row[0].upper(), "market": row[1].upper() if row[1] else None} for row in rows]
+        return [
+            {"symbol": row[0].upper(), "market": row[1].upper() if row[1] else None}
+            for row in rows
+        ]
 
 
 def format_yahoo_ticker(symbol: str, market: str) -> str:
     """Format the ticker symbol for Yahoo Finance based on the market."""
     if not market:
         return symbol
-    
+
     market = market.upper()
     mapping = {
         "LSE": ".L",
@@ -201,7 +207,7 @@ def format_yahoo_ticker(symbol: str, market: str) -> str:
         "EURONEXT": ".PA",
         "LSIN": ".IL",
     }
-    
+
     suffix = mapping.get(market, "")
     return f"{symbol}{suffix}"
 
@@ -254,7 +260,7 @@ def get_all_existing_data_ranges(conn, symbols):
     """
     if not symbols:
         return {}
-        
+
     symbols_upper = [s.upper() for s in symbols]
     with conn.cursor() as cur:
         cur.execute(
@@ -265,7 +271,9 @@ def get_all_existing_data_ranges(conn, symbols):
         return {row[0]: (row[1], row[2]) for row in rows}
 
 
-def fetch_stock_data(ticker, start_date, end_date, include_fundamentals=False, yahoo_ticker=None):
+def fetch_stock_data(
+    ticker, start_date, end_date, include_fundamentals=False, yahoo_ticker=None
+):
     """
     Fetch daily OHLC data for a single ticker with retry logic.
     Optionally include historical fundamentals.
@@ -475,7 +483,7 @@ def upsert_stock_data(conn, data, include_fundamentals=False):
                 VALUES (%s, %s, %s)
                 ON CONFLICT (symbol) DO NOTHING
                 """,
-                (sym, sym, True)
+                (sym, sym, True),
             )
 
         # Prepare data for insertion

@@ -1,13 +1,18 @@
 import os
-import typer
+
 import psycopg2
+import typer
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from rich.console import Console
 
-from tradingtools_stock.core.fetcher import create_tables_if_not_exist, get_db_connection
+from tradingtools_stock.core.fetcher import (
+    create_tables_if_not_exist,
+    get_db_connection,
+)
 
 app = typer.Typer(help="Database management commands.")
 console = Console()
+
 
 @app.command("setup")
 def setup(
@@ -24,15 +29,13 @@ def setup(
     try:
         # Connect to the default 'postgres' database to create the new one
         conn = psycopg2.connect(
-            dbname="postgres",
-            user=user,
-            password=password,
-            host=host,
-            port=port
+            dbname="postgres", user=user, password=password, host=host, port=port
         )
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
         with conn.cursor() as cur:
-            cur.execute(f"SELECT 1 FROM pg_catalog.pg_database WHERE datname = '{db_name}'")
+            cur.execute(
+                f"SELECT 1 FROM pg_catalog.pg_database WHERE datname = '{db_name}'"
+            )
             exists = cur.fetchone()
             if not exists:
                 cur.execute(f"CREATE DATABASE {db_name}")
@@ -51,8 +54,8 @@ def setup(
         new_conn = get_db_connection()
         create_tables_if_not_exist(new_conn)
         new_conn.close()
-        
+
         console.print("[bold green]Database setup complete![/]")
     except Exception as e:
         console.print(f"[bold red]Error setting up database: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e

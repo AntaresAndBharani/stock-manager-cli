@@ -1,12 +1,14 @@
+from pathlib import Path
+
 import typer
 from rich.console import Console
 from rich.table import Table
-from pathlib import Path
 
 from tradingtools_stock.core.fetcher import get_db_connection
 
 app = typer.Typer(help="Manage stock tickers in the database.")
 console = Console()
+
 
 @app.command("add")
 def add_ticker(
@@ -18,8 +20,8 @@ def add_ticker(
     """
     # Parse MARKET:SYMBOL
     market = None
-    if ':' in symbol:
-        parts = symbol.split(':', 1)
+    if ":" in symbol:
+        parts = symbol.split(":", 1)
         market = parts[0].strip().upper()
         symbol = parts[1].strip().upper()
     else:
@@ -36,22 +38,25 @@ def add_ticker(
                     active = true,
                     market = COALESCE(NULLIF(EXCLUDED.market, ''), tickers.market)
                 """,
-                (symbol, name, market, True)
+                (symbol, name, market, True),
             )
             conn.commit()
-        
+
         display_sym = f"{market}:{symbol}" if market else symbol
         console.print(f"[green]Successfully added/activated ticker:[/] {display_sym}")
     except Exception as e:
         console.print(f"[bold red]Error adding ticker:[/] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     finally:
-        if 'conn' in locals() and conn:
+        if "conn" in locals() and conn:
             conn.close()
+
 
 @app.command("list")
 def list_tickers(
-    all_tickers: bool = typer.Option(False, "--all", "-a", help="List all tickers, including inactive ones"),
+    all_tickers: bool = typer.Option(
+        False, "--all", "-a", help="List all tickers, including inactive ones"
+    ),
 ):
     """
     List tickers currently in the database.
@@ -60,11 +65,15 @@ def list_tickers(
         conn = get_db_connection()
         with conn.cursor() as cur:
             if all_tickers:
-                cur.execute("SELECT symbol, name, market, active, created_at FROM tickers ORDER BY symbol")
+                cur.execute(
+                    "SELECT symbol, name, market, active, created_at FROM tickers ORDER BY symbol"
+                )
             else:
-                cur.execute("SELECT symbol, name, market, active, created_at FROM tickers WHERE active = true ORDER BY symbol")
+                cur.execute(
+                    "SELECT symbol, name, market, active, created_at FROM tickers WHERE active = true ORDER BY symbol"
+                )
             rows = cur.fetchall()
-            
+
             if not rows:
                 console.print("No tickers found in the database.")
                 return
@@ -81,14 +90,15 @@ def list_tickers(
                 added_date = row[4].strftime("%Y-%m-%d") if row[4] else "Unknown"
                 market_val = row[2] or ""
                 table.add_row(row[0], market_val, row[1] or "", status, added_date)
-            
+
             console.print(table)
     except Exception as e:
         console.print(f"[bold red]Error listing tickers:[/] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     finally:
-        if 'conn' in locals() and conn:
+        if "conn" in locals() and conn:
             conn.close()
+
 
 @app.command("deactivate")
 def deactivate_ticker(
@@ -101,7 +111,9 @@ def deactivate_ticker(
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
-            cur.execute("UPDATE tickers SET active = false WHERE symbol = %s", (symbol,))
+            cur.execute(
+                "UPDATE tickers SET active = false WHERE symbol = %s", (symbol,)
+            )
             if cur.rowcount > 0:
                 conn.commit()
                 console.print(f"[yellow]Deactivated ticker:[/] {symbol}")
@@ -109,33 +121,40 @@ def deactivate_ticker(
                 console.print(f"[red]Ticker not found in the database:[/] {symbol}")
     except Exception as e:
         console.print(f"[bold red]Error deactivating ticker:[/] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     finally:
-        if 'conn' in locals() and conn:
+        if "conn" in locals() and conn:
             conn.close()
+
 
 @app.command("remove")
 def remove_ticker(
-    symbol: str = typer.Argument(..., help="The stock ticker symbol to remove completely"),
-    force: bool = typer.Option(False, "--force", "-f", help="Force removal without prompting"),
+    symbol: str = typer.Argument(
+        ..., help="The stock ticker symbol to remove completely"
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Force removal without prompting"
+    ),
 ):
     """
     Remove a ticker and all its associated historical data from the database.
     """
     symbol = symbol.upper()
     if not force:
-        confirm = typer.confirm(f"Are you sure you want to permanently delete {symbol} and all its historical data?")
+        confirm = typer.confirm(
+            f"Are you sure you want to permanently delete {symbol} and all its historical data?"
+        )
         if not confirm:
             console.print("Operation cancelled.")
             raise typer.Exit()
-            
+
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             # First, delete from stock_prices to respect foreign key constraints
             cur.execute("DELETE FROM stock_prices WHERE symbol = %s", (symbol,))
             deleted_prices = cur.rowcount
-            
+
             # Then, delete the ticker itself
             cur.execute("DELETE FROM tickers WHERE symbol = %s", (symbol,))
             if cur.rowcount > 0:
@@ -146,10 +165,11 @@ def remove_ticker(
                 console.print(f"[yellow]Ticker not found in the database:[/] {symbol}")
     except Exception as e:
         console.print(f"[bold red]Error removing ticker:[/] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     finally:
-        if 'conn' in locals() and conn:
+        if "conn" in locals() and conn:
             conn.close()
+
 
 @app.command("import")
 def import_tickers(
@@ -160,8 +180,8 @@ def import_tickers(
         dir_okay=False,
         readable=True,
         resolve_path=True,
-        help="Path to the CSV file containing tickers"
-    )
+        help="Path to the CSV file containing tickers",
+    ),
 ):
     """
     Bulk import tickers from a CSV file.
@@ -169,7 +189,7 @@ def import_tickers(
     """
     tickers_to_add = []
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             for line in f:
                 # Clean up the line (remove whitespace, quotes, commas)
                 raw = line.strip().strip(",").strip('"').strip("'")
@@ -177,23 +197,23 @@ def import_tickers(
                     continue
                 if raw.lower() in ["ticker", "symbol", "name"]:
                     continue
-                    
+
                 market = None
                 symbol = raw.upper()
-                if ':' in symbol:
-                    parts = symbol.split(':', 1)
+                if ":" in symbol:
+                    parts = symbol.split(":", 1)
                     market = parts[0].strip()
                     symbol = parts[1].strip()
-                    
+
                 tickers_to_add.append((symbol, market))
     except Exception as e:
         console.print(f"[bold red]Error reading file:[/] {e}")
-        raise typer.Exit(1)
-        
+        raise typer.Exit(1) from e
+
     if not tickers_to_add:
         console.print("[yellow]No valid tickers found in the file.[/]")
         raise typer.Exit()
-        
+
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -206,13 +226,15 @@ def import_tickers(
                         active = true,
                         market = COALESCE(NULLIF(EXCLUDED.market, ''), tickers.market)
                     """,
-                    (symbol, "", market, True)
+                    (symbol, "", market, True),
                 )
             conn.commit()
-        console.print(f"[green]Successfully imported and activated {len(tickers_to_add)} tickers.[/]")
+        console.print(
+            f"[green]Successfully imported and activated {len(tickers_to_add)} tickers.[/]"
+        )
     except Exception as e:
         console.print(f"[bold red]Error bulk adding tickers:[/] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     finally:
-        if 'conn' in locals() and conn:
+        if "conn" in locals() and conn:
             conn.close()

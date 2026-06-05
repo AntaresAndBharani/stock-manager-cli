@@ -1,7 +1,7 @@
 import typer
 from rich.console import Console
 
-from tradingtools_stock.commands import db, example, fetch, tickers, dashboard
+from tradingtools_stock.commands import dashboard, db, example, fetch, tickers
 from tradingtools_stock.core.config import __version__
 
 app = typer.Typer(
