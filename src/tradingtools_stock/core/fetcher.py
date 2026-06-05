@@ -225,6 +225,22 @@ def get_existing_data_range(conn, symbol):
         return cur.fetchone()
 
 
+def get_global_max_date(conn):
+    """
+    Get the overall maximum date for which we have any stock data.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        datetime.date: The maximum date, or None if no data exists.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT MAX(date) FROM stock_prices")
+        result = cur.fetchone()
+        return result[0] if result and result[0] else None
+
+
 def get_all_existing_data_ranges(conn, symbols):
     """
     Get the min and max dates for which we have data for multiple tickers.

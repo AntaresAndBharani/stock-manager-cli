@@ -29,7 +29,7 @@ dev = [
 ]
 
 [project.scripts]
-stock-manager-cli = "tradingtools_stock.main:app"
+tradingtools-stock = "tradingtools_stock.main:app"
 
 [build-system]
 requires = ["hatchling"]
