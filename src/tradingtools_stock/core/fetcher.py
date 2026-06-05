@@ -8,8 +8,8 @@ import requests  # type: ignore
 from psycopg2.extras import execute_values
 
 # Patch requests to handle encoding before importing yahooquery
-original_text_property = requests.models.Response.text.fget
-original_content_property = requests.models.Response.content.fget
+original_text_property = requests.models.Response.text.fget  # type: ignore
+original_content_property = requests.models.Response.content.fget  # type: ignore
 
 
 def patched_text_property(self):
@@ -37,8 +37,8 @@ def patched_init(self, *args, **kwargs):
         self._encoding = "latin-1"
 
 
-requests.models.Response.__init__ = patched_init
-requests.models.Response.text = property(patched_text_property)
+requests.models.Response.__init__ = patched_init  # type: ignore
+requests.models.Response.text = property(patched_text_property)  # type: ignore
 
 # Now import yahooquery after patching
 import yahooquery as yq  # noqa: E402
