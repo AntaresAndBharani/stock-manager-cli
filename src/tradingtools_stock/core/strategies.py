@@ -162,10 +162,7 @@ def get_dashboard_data(conn, tickers_to_process=None) -> pd.DataFrame:
 
             signal = "⚪ None"
             if colors_1m[1] == "Red" and colors_1m[2] == "Green" and daily_momentum_ok:
-                if colors_3m[1] == "Red":
-                    signal = "🟡 Weak Entry"
-                else:
-                    signal = "🟢 Strong Entry"
+                signal = "🟡 Weak Entry" if colors_3m[1] == "Red" else "🟢 Strong Entry"
 
             calc_date = df_daily.index[-1].date()
 
