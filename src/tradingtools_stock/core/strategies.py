@@ -303,18 +303,21 @@ def fetch_dashboard_cache(conn) -> pd.DataFrame:
 
     query = """
         SELECT 
-            symbol as "Ticker",
-            signal as "Signal",
-            trend_1m as "1M Trend",
-            trend_3m as "3M Trend",
-            price as "Price",
-            ema_21 as "21 EMA",
-            sma_50 as "50 SMA",
-            sma_100 as "100 SMA",
-            sma_200 as "200 SMA",
-            sma_1000_touch as "1000 SMA Touch"
-        FROM dashboard_cache
-        WHERE symbol = ANY(%s)
+            c.symbol as "Ticker",
+            COALESCE(t.sector, 'Unknown') as "Sector",
+            COALESCE(t.industry, 'Unknown') as "Industry",
+            c.signal as "Signal",
+            c.trend_1m as "1M Trend",
+            c.trend_3m as "3M Trend",
+            c.price as "Price",
+            c.ema_21 as "21 EMA",
+            c.sma_50 as "50 SMA",
+            c.sma_100 as "100 SMA",
+            c.sma_200 as "200 SMA",
+            c.sma_1000_touch as "1000 SMA Touch"
+        FROM dashboard_cache c
+        JOIN tickers t ON c.symbol = t.symbol
+        WHERE c.symbol = ANY(%s)
     """
 
     df = pd.read_sql_query(query, conn, params=(active_tickers,))

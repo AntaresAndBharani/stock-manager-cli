@@ -36,7 +36,7 @@ def load_backtest_data(div_pct=2.0):
         conn.close()
 
 
-tab1, tab2 = st.tabs(["Dashboard", "Backtesting"])
+tab1, tab2, tab3 = st.tabs(["Dashboard", "Backtesting", "Sector & Industry Analysis"])
 
 with tab1:  # noqa: SIM117
     with st.spinner("Loading Heikin-Ashi data..."):
@@ -52,6 +52,25 @@ with tab1:  # noqa: SIM117
                 if st.button("Refresh Data"):
                     load_data.clear()
                     st.rerun()
+
+                # Filters
+                col_filt1, col_filt2 = st.columns(2)
+                with col_filt1:
+                    sectors = sorted([s for s in df["Sector"].unique() if pd.notna(s)])
+                    selected_sectors = st.multiselect("Filter by Sector", options=sectors)
+                with col_filt2:
+                    if selected_sectors:
+                        filtered_df = df[df["Sector"].isin(selected_sectors)]
+                        industries = sorted([i for i in filtered_df["Industry"].unique() if pd.notna(i)])
+                    else:
+                        industries = sorted([i for i in df["Industry"].unique() if pd.notna(i)])
+                    selected_industries = st.multiselect("Filter by Industry", options=industries)
+                
+                # Apply filters
+                if selected_sectors:
+                    df = df[df["Sector"].isin(selected_sectors)]
+                if selected_industries:
+                    df = df[df["Industry"].isin(selected_industries)]
 
                 # Color formatter for Daily MAs relative to 200 SMA
                 def highlight_mas(row):
@@ -257,3 +276,60 @@ with tab2:
                 st.info("No trades triggered based on historical data.")
         except Exception as e:
             st.error(f"Error running backtest: {e}")
+
+with tab3:
+    st.header("Sector & Industry Analysis")
+    st.markdown("Summary of stocks per Sector/Industry and their normalized index (Average of Price / 200 SMA).")
+    
+    with st.spinner("Calculating analysis..."):
+        try:
+            df = load_data()
+            if df.empty:
+                st.warning("No data available.")
+            else:
+                # Calculate custom index: Price / 200 SMA
+                df["Index_Val"] = df.apply(
+                    lambda row: row["Price"] / row["200 SMA"] if pd.notna(row["200 SMA"]) and row["200 SMA"] > 0 else None, 
+                    axis=1
+                )
+                
+                # Sector summary
+                st.subheader("By Sector")
+                sector_summary = df.groupby("Sector").agg(
+                    Count=("Ticker", "count"),
+                    Index=("Index_Val", "mean")
+                ).reset_index().sort_values("Index", ascending=False)
+                
+                st.dataframe(
+                    sector_summary,
+                    column_config={
+                        "Count": st.column_config.NumberColumn("Number of Stocks"),
+                        "Index": st.column_config.NumberColumn("Custom Index", format="%.4f")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+                # Bar chart for Sector Index
+                if not sector_summary.empty:
+                    st.bar_chart(sector_summary.set_index("Sector")["Index"])
+                
+                # Industry summary
+                st.subheader("By Industry")
+                industry_summary = df.groupby(["Sector", "Industry"]).agg(
+                    Count=("Ticker", "count"),
+                    Index=("Index_Val", "mean")
+                ).reset_index().sort_values("Index", ascending=False)
+                
+                st.dataframe(
+                    industry_summary,
+                    column_config={
+                        "Count": st.column_config.NumberColumn("Number of Stocks"),
+                        "Index": st.column_config.NumberColumn("Custom Index", format="%.4f")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+        except Exception as e:
+            st.error(f"Error loading analysis data: {e}")
