@@ -238,3 +238,23 @@ def import_tickers(
     finally:
         if "conn" in locals() and conn:
             conn.close()
+
+
+@app.command("update-metadata")
+def update_metadata():
+    """
+    Fetch and update sector and industry metadata for all active tickers from Yahoo Finance.
+    """
+    from tradingtools_stock.core.fetcher import update_tickers_metadata
+
+    console.print("Fetching metadata for tickers... This may take a few minutes.")
+    try:
+        conn = get_db_connection()
+        update_tickers_metadata(conn)
+        console.print("[green]Metadata update complete.[/]")
+    except Exception as e:
+        console.print(f"[bold red]Error updating metadata:[/] {e}")
+        raise typer.Exit(1) from e
+    finally:
+        if "conn" in locals() and conn:
+            conn.close()
