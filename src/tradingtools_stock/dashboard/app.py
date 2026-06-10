@@ -2,6 +2,11 @@ import pandas as pd
 import streamlit as st
 
 from tradingtools_stock.core.fetcher import get_db_connection
+from tradingtools_stock.core.ibkr import (
+    fetch_portfolio,
+    get_ib_settings,
+    is_api_port_open,
+)
 from tradingtools_stock.core.strategies import (
     fetch_dashboard_cache,
     refresh_dashboard_cache,
@@ -36,7 +41,14 @@ def load_backtest_data(div_pct=2.0):
         conn.close()
 
 
-tab1, tab2, tab3 = st.tabs(["Dashboard", "Backtesting", "Sector & Industry Analysis"])
+@st.cache_data(ttl=60)
+def load_portfolio():
+    return fetch_portfolio()
+
+
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["Dashboard", "Backtesting", "Sector & Industry Analysis", "IBKR Portfolio"]
+)
 
 with tab1:  # noqa: SIM117
     with st.spinner("Loading Heikin-Ashi data..."):
@@ -57,15 +69,23 @@ with tab1:  # noqa: SIM117
                 col_filt1, col_filt2 = st.columns(2)
                 with col_filt1:
                     sectors = sorted([s for s in df["Sector"].unique() if pd.notna(s)])
-                    selected_sectors = st.multiselect("Filter by Sector", options=sectors)
+                    selected_sectors = st.multiselect(
+                        "Filter by Sector", options=sectors
+                    )
                 with col_filt2:
                     if selected_sectors:
                         filtered_df = df[df["Sector"].isin(selected_sectors)]
-                        industries = sorted([i for i in filtered_df["Industry"].unique() if pd.notna(i)])
+                        industries = sorted(
+                            [i for i in filtered_df["Industry"].unique() if pd.notna(i)]
+                        )
                     else:
-                        industries = sorted([i for i in df["Industry"].unique() if pd.notna(i)])
-                    selected_industries = st.multiselect("Filter by Industry", options=industries)
-                
+                        industries = sorted(
+                            [i for i in df["Industry"].unique() if pd.notna(i)]
+                        )
+                    selected_industries = st.multiselect(
+                        "Filter by Industry", options=industries
+                    )
+
                 # Apply filters
                 if selected_sectors:
                     df = df[df["Sector"].isin(selected_sectors)]
@@ -279,8 +299,10 @@ with tab2:
 
 with tab3:
     st.header("Sector & Industry Analysis")
-    st.markdown("Summary of stocks per Sector/Industry and their normalized index (Average of Price / 200 SMA).")
-    
+    st.markdown(
+        "Summary of stocks per Sector/Industry and their normalized index (Average of Price / 200 SMA)."
+    )
+
     with st.spinner("Calculating analysis..."):
         try:
             df = load_data()
@@ -289,47 +311,165 @@ with tab3:
             else:
                 # Calculate custom index: Price / 200 SMA
                 df["Index_Val"] = df.apply(
-                    lambda row: row["Price"] / row["200 SMA"] if pd.notna(row["200 SMA"]) and row["200 SMA"] > 0 else None, 
-                    axis=1
+                    lambda row: (
+                        row["Price"] / row["200 SMA"]
+                        if pd.notna(row["200 SMA"]) and row["200 SMA"] > 0
+                        else None
+                    ),
+                    axis=1,
                 )
-                
+
                 # Sector summary
                 st.subheader("By Sector")
-                sector_summary = df.groupby("Sector").agg(
-                    Count=("Ticker", "count"),
-                    Index=("Index_Val", "mean")
-                ).reset_index().sort_values("Index", ascending=False)
-                
+                sector_summary = (
+                    df.groupby("Sector")
+                    .agg(Count=("Ticker", "count"), Index=("Index_Val", "mean"))
+                    .reset_index()
+                    .sort_values("Index", ascending=False)
+                )
+
                 st.dataframe(
                     sector_summary,
                     column_config={
                         "Count": st.column_config.NumberColumn("Number of Stocks"),
-                        "Index": st.column_config.NumberColumn("Custom Index", format="%.4f")
+                        "Index": st.column_config.NumberColumn(
+                            "Custom Index", format="%.4f"
+                        ),
                     },
                     hide_index=True,
-                    use_container_width=True
+                    use_container_width=True,
                 )
-                
+
                 # Bar chart for Sector Index
                 if not sector_summary.empty:
                     st.bar_chart(sector_summary.set_index("Sector")["Index"])
-                
+
                 # Industry summary
                 st.subheader("By Industry")
-                industry_summary = df.groupby(["Sector", "Industry"]).agg(
-                    Count=("Ticker", "count"),
-                    Index=("Index_Val", "mean")
-                ).reset_index().sort_values("Index", ascending=False)
-                
+                industry_summary = (
+                    df.groupby(["Sector", "Industry"])
+                    .agg(Count=("Ticker", "count"), Index=("Index_Val", "mean"))
+                    .reset_index()
+                    .sort_values("Index", ascending=False)
+                )
+
                 st.dataframe(
                     industry_summary,
                     column_config={
                         "Count": st.column_config.NumberColumn("Number of Stocks"),
-                        "Index": st.column_config.NumberColumn("Custom Index", format="%.4f")
+                        "Index": st.column_config.NumberColumn(
+                            "Custom Index", format="%.4f"
+                        ),
                     },
                     hide_index=True,
-                    use_container_width=True
+                    use_container_width=True,
                 )
-                
+
         except Exception as e:
             st.error(f"Error loading analysis data: {e}")
+
+with tab4:
+    st.header("IBKR Portfolio")
+
+    ib_host, ib_port, _ = get_ib_settings()
+    if not is_api_port_open(ib_host, ib_port):
+        st.warning(
+            f"IB Gateway / TWS is not reachable on {ib_host}:{ib_port}. "
+            "Start it with `tradingtools-stock ibkr gateway` (or "
+            "`tradingtools-stock dashboard start --gateway`), log in, "
+            "then click Retry."
+        )
+        if st.button("Retry", key="ibkr_retry"):
+            load_portfolio.clear()
+            st.rerun()
+    else:
+        with st.spinner("Fetching portfolio from IBKR..."):
+            try:
+                pf = load_portfolio()
+
+                if st.button("Refresh Portfolio", key="ibkr_refresh"):
+                    load_portfolio.clear()
+                    st.rerun()
+
+                st.caption(f"Account: {pf['account']}")
+
+                summary = pf["summary"]
+                positions = pf["positions"]
+
+                total_unrealized = (
+                    positions["Unrealized P&L"].sum() if not positions.empty else 0.0
+                )
+
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric(
+                    "Net Liquidation", f"${summary.get('NetLiquidation', 0):,.2f}"
+                )
+                col2.metric("Cash", f"${summary.get('TotalCashValue', 0):,.2f}")
+                col3.metric("Buying Power", f"${summary.get('BuyingPower', 0):,.2f}")
+                col4.metric(
+                    "Unrealized P&L",
+                    f"${total_unrealized:,.2f}",
+                    delta=f"{total_unrealized:,.2f}",
+                )
+
+                col5, col6, col7 = st.columns(3)
+                col5.metric(
+                    "Gross Position Value",
+                    f"${summary.get('GrossPositionValue', 0):,.2f}",
+                )
+                col6.metric(
+                    "Available Funds", f"${summary.get('AvailableFunds', 0):,.2f}"
+                )
+                col7.metric(
+                    "Maint. Margin", f"${summary.get('MaintMarginReq', 0):,.2f}"
+                )
+
+                st.subheader(f"Open Positions ({len(positions)})")
+                if positions.empty:
+                    st.info("No open positions.")
+                else:
+
+                    def highlight_pnl(row):
+                        styles = [""] * len(row)
+                        for col in ["Unrealized P&L", "Unrealized %", "Realized P&L"]:
+                            if col in row.index and pd.notna(row[col]):
+                                idx = row.index.get_loc(col)
+                                if row[col] < 0:
+                                    styles[idx] = "color: #ff5555; font-weight: bold;"
+                                elif row[col] > 0:
+                                    styles[idx] = "color: #00ff00; font-weight: bold;"
+                        return styles
+
+                    st.dataframe(
+                        positions.style.apply(highlight_pnl, axis=1),
+                        column_config={
+                            "Avg Cost": st.column_config.NumberColumn(format="$%.2f"),
+                            "Price": st.column_config.NumberColumn(format="$%.2f"),
+                            "Market Value": st.column_config.NumberColumn(
+                                format="$%.2f"
+                            ),
+                            "Unrealized P&L": st.column_config.NumberColumn(
+                                format="$%.2f"
+                            ),
+                            "Unrealized %": st.column_config.NumberColumn(
+                                format="%.2f%%"
+                            ),
+                            "Realized P&L": st.column_config.NumberColumn(
+                                format="$%.2f"
+                            ),
+                            "Weight %": st.column_config.NumberColumn(format="%.2f%%"),
+                        },
+                        hide_index=True,
+                        width="stretch",
+                    )
+
+                    if "Weight %" in positions.columns:
+                        st.subheader("Allocation (% of Net Liquidation)")
+                        st.bar_chart(positions.set_index("Symbol")["Weight %"])
+
+            except Exception as e:
+                st.error(f"Error fetching IBKR portfolio: {e}")
+                st.info(
+                    "Make sure you are logged into IB Gateway and the API is "
+                    "enabled (Configure > Settings > API > Settings)."
+                )

@@ -1,7 +1,7 @@
 import typer
 from rich.console import Console
 
-from tradingtools_stock.commands import dashboard, db, example, fetch, tickers
+from tradingtools_stock.commands import dashboard, db, example, fetch, ibkr, tickers
 from tradingtools_stock.core.config import __version__
 
 app = typer.Typer(
@@ -17,6 +17,7 @@ app.add_typer(fetch.app, name="fetch")
 app.add_typer(db.app, name="db")
 app.add_typer(tickers.app, name="tickers")
 app.add_typer(dashboard.app, name="dashboard")
+app.add_typer(ibkr.app, name="ibkr")
 
 
 def version_callback(value: bool) -> None:

@@ -246,7 +246,7 @@ def update_metadata():
     Fetch and update sector and industry metadata for all active tickers from Yahoo Finance.
     """
     from tradingtools_stock.core.fetcher import update_tickers_metadata
-    
+
     console.print("Fetching metadata for tickers... This may take a few minutes.")
     try:
         conn = get_db_connection()

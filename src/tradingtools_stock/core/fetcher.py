@@ -85,7 +85,9 @@ def create_tables_if_not_exist(conn):
         )
 
         # Add market column if it doesn't exist
-        logging.debug("Ensuring 'market', 'sector', and 'industry' columns exist on tickers table")
+        logging.debug(
+            "Ensuring 'market', 'sector', and 'industry' columns exist on tickers table"
+        )
         cur.execute(
             """
             ALTER TABLE tickers ADD COLUMN IF NOT EXISTS market VARCHAR(50);
@@ -543,7 +545,9 @@ def update_tickers_metadata(conn):
     """
     logging.info("Updating tickers metadata...")
     with conn.cursor() as cur:
-        cur.execute("SELECT symbol, market FROM tickers WHERE active = true AND (sector IS NULL OR industry IS NULL)")
+        cur.execute(
+            "SELECT symbol, market FROM tickers WHERE active = true AND (sector IS NULL OR industry IS NULL)"
+        )
         rows = cur.fetchall()
 
     if not rows:
@@ -556,26 +560,31 @@ def update_tickers_metadata(conn):
             query_ticker = format_yahoo_ticker(symbol, market)
             stock = yq.Ticker(query_ticker)
             profile = stock.asset_profile
-            
+
             sector = "Unknown"
             industry = "Unknown"
-            
-            if isinstance(profile, dict) and query_ticker in profile and isinstance(profile[query_ticker], dict):
+
+            if (
+                isinstance(profile, dict)
+                and query_ticker in profile
+                and isinstance(profile[query_ticker], dict)
+            ):
                 data = profile[query_ticker]
                 sector = data.get("sector", "Unknown")
                 industry = data.get("industry", "Unknown")
-            
+
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE tickers SET sector = %s, industry = %s WHERE symbol = %s",
-                    (sector, industry, symbol)
+                    (sector, industry, symbol),
                 )
                 conn.commit()
             updated_count += 1
-            logging.info(f"Updated metadata for {symbol}: Sector={sector}, Industry={industry}")
+            logging.info(
+                f"Updated metadata for {symbol}: Sector={sector}, Industry={industry}"
+            )
             time.sleep(0.5)  # Rate limiting
         except Exception as e:
             logging.warning(f"Failed to update metadata for {symbol}: {e}")
 
     logging.info(f"Metadata update complete. Updated {updated_count} tickers.")
-

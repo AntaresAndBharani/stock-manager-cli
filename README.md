@@ -48,6 +48,32 @@ $env:DB_HOST="localhost"
 $env:DB_PORT="5433"
 ```
 
+## IBKR Portfolio (IB Gateway)
+
+The dashboard's **IBKR Portfolio** tab reads your live account (positions, P&L, account summary) through the TWS API. One-time setup:
+
+1. **Install IB Gateway** (stable) from
+   https://www.interactivebrokers.com/en/trading/ibgateway-stable.php
+   (default install location `C:\Jts` is auto-detected; otherwise set `IB_GATEWAY_PATH`).
+2. **Log in** and enable the API: *Configure > Settings > API > Settings >* check
+   *Enable ActiveX and Socket Clients*. Note the socket port.
+
+Connection settings (defaults shown):
+
+```powershell
+$env:IB_HOST="127.0.0.1"
+$env:IB_PORT="4002"        # IB Gateway paper; 4001 live, 7497 TWS paper, 7496 TWS live
+$env:IB_CLIENT_ID="11"
+```
+
+Daily usage:
+
+```bash
+tradingtools-stock ibkr gateway          # start IB Gateway (log in within its window)
+tradingtools-stock ibkr status           # verify the API connection
+tradingtools-stock dashboard start -g    # start dashboard + IB Gateway together
+```
+
 ## Try the CLI locally
 Once installed, you can invoke the CLI from anywhere in your terminal!
 ```bash
