@@ -1,3 +1,4 @@
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -300,7 +301,8 @@ with tab2:
 with tab3:
     st.header("Sector & Industry Analysis")
     st.markdown(
-        "Summary of stocks per Sector/Industry and their normalized index (Average of Price / 200 SMA)."
+        "Sector rotation view: relative strength vs the 200 SMA, breadth, "
+        "Heikin-Ashi trend health and entry-signal concentration."
     )
 
     with st.spinner("Calculating analysis..."):
@@ -309,60 +311,213 @@ with tab3:
             if df.empty:
                 st.warning("No data available.")
             else:
-                # Calculate custom index: Price / 200 SMA
-                df["Index_Val"] = df.apply(
-                    lambda row: (
-                        row["Price"] / row["200 SMA"]
-                        if pd.notna(row["200 SMA"]) and row["200 SMA"] > 0
-                        else None
-                    ),
-                    axis=1,
+                analysis = df.copy()
+                price = pd.to_numeric(analysis["Price"], errors="coerce")
+                sma200 = pd.to_numeric(analysis["200 SMA"], errors="coerce")
+                analysis["Pct vs 200"] = (price / sma200.where(sma200 > 0) - 1) * 100
+                analysis["Above 200"] = analysis["Pct vs 200"] > 0
+                analysis["HA Green"] = (
+                    analysis["1M Trend"].astype(str).str.strip().str.endswith("🟩")
+                )
+                analysis["Has Entry"] = analysis["Signal"] != "⚪ None"
+
+                valid_pct = analysis["Pct vs 200"].notna()
+                breadth = (
+                    analysis.loc[valid_pct, "Above 200"].mean() * 100
+                    if valid_pct.any()
+                    else 0.0
+                )
+                sector_median = (
+                    analysis.groupby("Sector")["Pct vs 200"].median().dropna()
+                )
+                entries = analysis[analysis["Has Entry"]]
+
+                kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+                kpi1.metric(
+                    "Market Breadth",
+                    f"{breadth:.0f}%",
+                    help="Share of all stocks trading above their 200 SMA.",
+                )
+                kpi2.metric(
+                    "Sectors in Uptrend",
+                    f"{int((sector_median > 0).sum())} / {len(sector_median)}",
+                    help="Sectors whose median stock is above its 200 SMA.",
+                )
+                if not sector_median.empty:
+                    kpi3.metric(
+                        "Leading Sector",
+                        sector_median.idxmax(),
+                        delta=f"{sector_median.max():+.1f}%",
+                        help="Highest median % vs 200 SMA.",
+                    )
+                    kpi4.metric(
+                        "Lagging Sector",
+                        sector_median.idxmin(),
+                        delta=f"{sector_median.min():+.1f}%",
+                        help="Lowest median % vs 200 SMA.",
+                    )
+                if entries.empty:
+                    kpi5.metric("Entry Signals", "0")
+                else:
+                    entries_by_sector = entries["Sector"].value_counts()
+                    kpi5.metric(
+                        "Entry Signals",
+                        f"{len(entries)}",
+                        delta=(
+                            f"{entries_by_sector.iloc[0]} in "
+                            f"{entries_by_sector.index[0]}"
+                        ),
+                        delta_color="off",
+                        help="Active Strong/Weak entries and where they cluster.",
+                    )
+
+                sector_summary = (
+                    analysis.groupby("Sector")
+                    .agg(
+                        Stocks=("Ticker", "count"),
+                        Median=("Pct vs 200", "median"),
+                        Breadth=("Above 200", "mean"),
+                        HAGreen=("HA Green", "mean"),
+                        Entries=("Has Entry", "sum"),
+                    )
+                    .reset_index()
+                    .sort_values("Median", ascending=False)
+                )
+                sector_summary["Breadth"] = sector_summary["Breadth"] * 100
+                sector_summary["HAGreen"] = sector_summary["HAGreen"] * 100
+
+                st.subheader("Sector Relative Strength")
+                chart_df = sector_summary.dropna(subset=["Median"])
+                if chart_df.empty:
+                    st.info("No sectors with a valid 200 SMA.")
+                else:
+                    bars = (
+                        alt.Chart(chart_df)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Median:Q", title="Median % vs 200 SMA"),
+                            y=alt.Y("Sector:N", sort="-x", title=None),
+                            color=alt.condition(
+                                alt.datum.Median >= 0,
+                                alt.value("#00ff00"),
+                                alt.value("#ff5555"),
+                            ),
+                            tooltip=[
+                                alt.Tooltip("Sector:N"),
+                                alt.Tooltip(
+                                    "Median:Q",
+                                    format="+.1f",
+                                    title="Median % vs 200 SMA",
+                                ),
+                                alt.Tooltip("Stocks:Q"),
+                            ],
+                        )
+                    )
+                    zero_rule = (
+                        alt.Chart(pd.DataFrame({"x": [0.0]}))
+                        .mark_rule(color="#888888")
+                        .encode(x="x:Q")
+                    )
+                    st.altair_chart(bars + zero_rule)
+
+                st.subheader("Sector Health")
+                sector_display = sector_summary.rename(
+                    columns={
+                        "Median": "Median vs 200 SMA",
+                        "Breadth": "Breadth > 200 SMA",
+                        "HAGreen": "1M HA Green",
+                    }
+                )
+                low_sample = sector_display["Stocks"] < 3
+                sector_display.loc[low_sample, "Sector"] = (
+                    sector_display.loc[low_sample, "Sector"] + " ⚠️"
                 )
 
-                # Sector summary
-                st.subheader("By Sector")
-                sector_summary = (
-                    df.groupby("Sector")
-                    .agg(Count=("Ticker", "count"), Index=("Index_Val", "mean"))
-                    .reset_index()
-                    .sort_values("Index", ascending=False)
-                )
+                def highlight_pct_col(col_name):
+                    def _highlight(row):
+                        styles = [""] * len(row)
+                        val = row[col_name]
+                        if pd.notna(val):
+                            idx = row.index.get_loc(col_name)
+                            color = "#00ff00" if val >= 0 else "#ff5555"
+                            styles[idx] = f"color: {color}; font-weight: bold;"
+                        return styles
+
+                    return _highlight
 
                 st.dataframe(
-                    sector_summary,
+                    sector_display.style.apply(
+                        highlight_pct_col("Median vs 200 SMA"), axis=1
+                    ),
                     column_config={
-                        "Count": st.column_config.NumberColumn("Number of Stocks"),
-                        "Index": st.column_config.NumberColumn(
-                            "Custom Index", format="%.4f"
+                        "Median vs 200 SMA": st.column_config.NumberColumn(
+                            format="%+.1f%%"
                         ),
+                        "Breadth > 200 SMA": st.column_config.ProgressColumn(
+                            format="%.0f%%", min_value=0, max_value=100
+                        ),
+                        "1M HA Green": st.column_config.NumberColumn(format="%.0f%%"),
                     },
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                 )
+                if low_sample.any():
+                    st.caption(
+                        "⚠️ Fewer than 3 stocks in the sector — "
+                        "read its numbers with caution."
+                    )
 
-                # Bar chart for Sector Index
-                if not sector_summary.empty:
-                    st.bar_chart(sector_summary.set_index("Sector")["Index"])
-
-                # Industry summary
                 st.subheader("By Industry")
                 industry_summary = (
-                    df.groupby(["Sector", "Industry"])
-                    .agg(Count=("Ticker", "count"), Index=("Index_Val", "mean"))
+                    analysis.groupby(["Sector", "Industry"])
+                    .agg(
+                        Stocks=("Ticker", "count"),
+                        Median=("Pct vs 200", "median"),
+                        Entries=("Has Entry", "sum"),
+                    )
                     .reset_index()
-                    .sort_values("Index", ascending=False)
+                    .sort_values("Median", ascending=False)
                 )
-
                 st.dataframe(
-                    industry_summary,
+                    industry_summary.style.apply(highlight_pct_col("Median"), axis=1),
                     column_config={
-                        "Count": st.column_config.NumberColumn("Number of Stocks"),
-                        "Index": st.column_config.NumberColumn(
-                            "Custom Index", format="%.4f"
+                        "Median": st.column_config.NumberColumn(
+                            "Median vs 200 SMA", format="%+.1f%%"
                         ),
                     },
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
+                )
+
+                st.subheader("Sector Drill-Down")
+                sector_options = sorted(analysis["Sector"].dropna().unique())
+                selected_sector = st.selectbox(
+                    "Sector", options=sector_options, key="sector_drilldown"
+                )
+                constituents = analysis[analysis["Sector"] == selected_sector]
+
+                detail = constituents[
+                    [
+                        "Ticker",
+                        "Industry",
+                        "Signal",
+                        "Pct vs 200",
+                        "1M Trend",
+                        "3M Trend",
+                        "Price",
+                    ]
+                ].sort_values("Pct vs 200", ascending=False)
+
+                st.dataframe(
+                    detail.style.apply(highlight_pct_col("Pct vs 200"), axis=1),
+                    column_config={
+                        "Pct vs 200": st.column_config.NumberColumn(
+                            "% vs 200 SMA", format="%+.1f%%"
+                        ),
+                        "Price": st.column_config.NumberColumn(format="$%.2f"),
+                    },
+                    hide_index=True,
+                    width="stretch",
                 )
 
         except Exception as e:
