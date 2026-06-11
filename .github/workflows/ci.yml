@@ -7,6 +7,32 @@ on:
     branches: [ "main" ]
 
 jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check version bump
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE_VERSION=$(git show origin/${{ github.base_ref }}:pyproject.toml | grep -E '^version = ' | awk -F '"' '{print $2}')
+          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | awk -F '"' '{print $2}')
+          
+          echo "Base version: $BASE_VERSION"
+          echo "Current version: $CURRENT_VERSION"
+          
+          if [ "$CURRENT_VERSION" = "$BASE_VERSION" ]; then
+            echo "::error::Version must be bumped in pyproject.toml!"
+            exit 1
+          fi
+          
+          HIGHEST=$(printf "%s\n%s" "$BASE_VERSION" "$CURRENT_VERSION" | sort -V | tail -n 1)
+          if [ "$HIGHEST" != "$CURRENT_VERSION" ]; then
+            echo "::error::Current version ($CURRENT_VERSION) must be greater than base version ($BASE_VERSION)!"
+            exit 1
+          fi
+
   build-and-test:
     runs-on: ubuntu-latest
     strategy:
@@ -39,3 +65,5 @@ jobs:
     - name: Test with pytest
       run: |
         pytest
+
+

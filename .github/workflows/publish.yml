@@ -64,3 +64,19 @@ jobs:
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Set Release as Current (Remove Draft)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get the actual version published
+          VERSION=$(hatch version)
+          
+          echo "Updating release v$VERSION..."
+          if gh release view v$VERSION &>/dev/null; then
+            gh release edit v$VERSION --draft=false
+            echo "Release v$VERSION is now published."
+          else
+            echo "Draft release v$VERSION not found. Creating a new release."
+            gh release create v$VERSION --title "v$VERSION" --notes "Release v$VERSION"
+          fi

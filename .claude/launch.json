@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-Command",
+        "$env:DB_NAME='fractanomicsdb'; $env:DB_USER='postgres'; $env:DB_PASS='postgres'; $env:DB_HOST='localhost'; $env:DB_PORT='5433'; .venv\\Scripts\\python.exe -m streamlit run src\\tradingtools_stock\\dashboard\\app.py --server.port 8502 --server.headless true"
+      ],
+      "port": 8502
+    }
+  ]
+}
