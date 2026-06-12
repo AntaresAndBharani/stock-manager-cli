@@ -1,5 +1,6 @@
 import altair as alt
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from tradingtools_stock.core.fetcher import get_db_connection
@@ -478,6 +479,37 @@ with tab3:
                     .reset_index()
                     .sort_values("Median", ascending=False)
                 )
+
+                # Treemap: tile size = stock count, color = median % vs 200 SMA.
+                treemap_df = industry_summary.dropna(subset=["Median"])
+                if treemap_df.empty:
+                    st.info("No industries with a valid 200 SMA to chart.")
+                else:
+                    bound = float(treemap_df["Median"].abs().max()) or 1.0
+                    fig = px.treemap(
+                        treemap_df,
+                        path=[px.Constant("All sectors"), "Sector", "Industry"],
+                        values="Stocks",
+                        color="Median",
+                        color_continuous_scale=["#ff5555", "#888888", "#00ff00"],
+                        color_continuous_midpoint=0,
+                        range_color=[-bound, bound],
+                        custom_data=["Median", "Entries"],
+                    )
+                    fig.update_traces(
+                        hovertemplate=(
+                            "<b>%{label}</b><br>"
+                            "Stocks: %{value}<br>"
+                            "Median vs 200 SMA: %{customdata[0]:+.1f}%<br>"
+                            "Entries: %{customdata[1]}<extra></extra>"
+                        )
+                    )
+                    fig.update_layout(
+                        margin=dict(t=10, l=0, r=0, b=0),
+                        coloraxis_colorbar_title="% vs 200",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
                 st.dataframe(
                     industry_summary.style.apply(highlight_pct_col("Median"), axis=1),
                     column_config={

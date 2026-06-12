@@ -1,6 +1,6 @@
 [project]
 name = "stock-manager-cli"
-version = "0.5.0"
+version = "0.5.1"
 description = "A world-class Python CLI template powered by Typer and rich."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,8 @@ dependencies = [
     "yahooquery>=2.3.0",
     "requests>=2.28.0",
     "streamlit>=1.20.0",
-    "ib_async>=1.0.0"
+    "ib_async>=1.0.0",
+    "plotly>=5.0.0"
 ]
 
 [project.optional-dependencies]
