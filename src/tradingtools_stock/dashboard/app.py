@@ -171,7 +171,7 @@ with tab1:  # noqa: SIM117
                 # Compare against the signals as of an earlier date (default: 1
                 # month ago). Recomputed on demand from full price history.
                 show_asof = st.toggle(
-                    "Compare with an earlier date", value=False
+                    "Compare with an earlier date", value=True
                 )
                 if show_asof:
                     today = pd.Timestamp.today().normalize()
