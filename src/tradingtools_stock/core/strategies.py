@@ -72,9 +72,13 @@ def resample_and_calculate_ha(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return calculate_heikin_ashi(resampled)
 
 
-def get_dashboard_data(conn, tickers_to_process=None) -> pd.DataFrame:
+def get_dashboard_data(conn, tickers_to_process=None, as_of_date=None) -> pd.DataFrame:
     """
     Get the dashboard data for given tickers, or all active if None.
+
+    If ``as_of_date`` is provided, daily data is truncated to that date
+    (inclusive) before any indicators are calculated, so the returned signals
+    reflect what the dashboard would have shown as of that historical date.
     """
     # Get active tickers
     if tickers_to_process is None:
@@ -84,10 +88,14 @@ def get_dashboard_data(conn, tickers_to_process=None) -> pd.DataFrame:
     else:
         tickers = tickers_to_process
 
+    as_of_ts = pd.Timestamp(as_of_date) if as_of_date is not None else None
+
     results = []
     for ticker in tickers:
         try:
             df_daily = fetch_daily_data(conn, ticker)
+            if as_of_ts is not None and not df_daily.empty:
+                df_daily = df_daily[df_daily.index <= as_of_ts]
             if df_daily.empty:
                 continue
 
