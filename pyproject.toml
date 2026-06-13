@@ -1,6 +1,6 @@
 [project]
 name = "stock-manager-cli"
-version = "0.5.1"
+dynamic = ["version"]
 description = "A world-class Python CLI template powered by Typer and rich."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -61,3 +61,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = "-v --cov=tradingtools_stock --cov-report=term-missing"
 testpaths = ["tests"]
+
+[tool.hatch.version]
+path = "src/tradingtools_stock/__init__.py"
