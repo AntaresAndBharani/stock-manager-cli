@@ -11,6 +11,7 @@ from tradingtools_stock.core.ibkr import (
 )
 from tradingtools_stock.core.strategies import (
     fetch_dashboard_cache,
+    get_dashboard_data,
     refresh_dashboard_cache,
     run_backtest,
 )
@@ -43,6 +44,16 @@ def load_backtest_data(div_pct=2.0):
         conn.close()
 
 
+@st.cache_data(ttl=3600)
+def load_data_asof(as_of_date):
+    """Recompute the dashboard signals as of a historical date (uncached path)."""
+    conn = get_db_connection()
+    try:
+        return get_dashboard_data(conn, as_of_date=as_of_date)
+    finally:
+        conn.close()
+
+
 @st.cache_data(ttl=60)
 def load_portfolio():
     return fetch_portfolio()
@@ -62,6 +73,10 @@ with tab1:  # noqa: SIM117
                     "No active tickers found or no data available. Please fetch stock data first."
                 )
             else:
+                # Sector/Industry lookup, kept before row filters are applied so
+                # the as-of recompute (which has no sector data) can be enriched.
+                df_meta = df[["Ticker", "Sector", "Industry"]].copy()
+
                 # Refresh button
                 if st.button("Refresh Data"):
                     load_data.clear()
@@ -153,6 +168,51 @@ with tab1:  # noqa: SIM117
                     )
                 else:
                     st.info("No active entries found.")
+
+                # Compare against the signals as of an earlier date (default: 1
+                # month ago). Recomputed on demand from full price history.
+                show_asof = st.toggle(
+                    "Compare with an earlier date", value=True
+                )
+                if show_asof:
+                    today = pd.Timestamp.today().normalize()
+                    default_asof = (today - pd.DateOffset(months=1)).date()
+                    as_of = st.date_input(
+                        "Entries as of",
+                        value=default_asof,
+                        max_value=today.date(),
+                    )
+                    with st.spinner(f"Computing entries as of {as_of}..."):
+                        df_asof = load_data_asof(as_of)
+
+                    if df_asof.empty:
+                        st.info("No data available as of that date.")
+                    else:
+                        # Enrich with Sector/Industry and align to the live table.
+                        df_asof = df_asof.merge(df_meta, on="Ticker", how="left")
+                        df_asof = df_asof.reindex(columns=df.columns)
+                        if selected_sectors:
+                            df_asof = df_asof[
+                                df_asof["Sector"].isin(selected_sectors)
+                            ]
+                        if selected_industries:
+                            df_asof = df_asof[
+                                df_asof["Industry"].isin(selected_industries)
+                            ]
+
+                        df_asof_entries = df_asof[df_asof["Signal"] != "⚪ None"]
+                        st.subheader(
+                            f"Entries as of {as_of} ({len(df_asof_entries)})"
+                        )
+                        if not df_asof_entries.empty:
+                            st.dataframe(
+                                df_asof_entries.style.apply(highlight_mas, axis=1),
+                                column_config=col_config,
+                                width="stretch",
+                                hide_index=True,
+                            )
+                        else:
+                            st.info("No active entries as of that date.")
 
                 st.subheader(
                     f"No Entries (1000 SMA Strategy) ({len(df_no_entries_1k)})"
