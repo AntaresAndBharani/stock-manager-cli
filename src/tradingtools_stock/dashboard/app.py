@@ -129,10 +129,10 @@ with tab1:  # noqa: SIM117
                                     "color: #00ff00; font-weight: bold;"  # Green
                                 )
 
-                    if "1000 SMA Touch" in row.index:
-                        idx = row.index.get_loc("1000 SMA Touch")
-                        val = str(row["1000 SMA Touch"])
-                        if "(" in val:
+                    if "1000 SMA Touch Days" in row.index:
+                        idx = row.index.get_loc("1000 SMA Touch Days")
+                        val = row["1000 SMA Touch Days"]
+                        if pd.notna(val):
                             styles[idx] = "color: #00ff00; font-weight: bold;"  # Green
                         else:
                             styles[idx] = "color: #ff5555; font-weight: bold;"  # Red
@@ -142,11 +142,7 @@ with tab1:  # noqa: SIM117
                 df_entries = df[df["Signal"] != "⚪ None"]
                 df_no_entries = df[df["Signal"] == "⚪ None"]
 
-                mask_1000_sma = (
-                    df_no_entries["1000 SMA Touch"]
-                    .astype(str)
-                    .str.contains("(", regex=False)
-                )
+                mask_1000_sma = df_no_entries["1000 SMA Touch Days"].notna()
                 df_no_entries_1k = df_no_entries[mask_1000_sma]
                 df_no_entries_other = df_no_entries[~mask_1000_sma]
 
@@ -156,6 +152,8 @@ with tab1:  # noqa: SIM117
                     "50 SMA": st.column_config.NumberColumn(format="$%.2f"),
                     "100 SMA": st.column_config.NumberColumn(format="$%.2f"),
                     "200 SMA": st.column_config.NumberColumn(format="$%.2f"),
+                    "1000 SMA": st.column_config.NumberColumn(format="$%.2f"),
+                    "1000 SMA Touch Days": st.column_config.NumberColumn(format="%d d ago"),
                 }
 
                 st.subheader(f"Entries ({len(df_entries)})")
@@ -176,7 +174,7 @@ with tab1:  # noqa: SIM117
                 )
                 if show_asof:
                     today = pd.Timestamp.today().normalize()
-                    default_asof = (today - pd.DateOffset(months=1)).date()
+                    default_asof = (today.replace(day=1) - pd.Timedelta(days=1)).date()
                     as_of = st.date_input(
                         "Entries as of",
                         value=default_asof,

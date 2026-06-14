@@ -125,10 +125,8 @@ def get_dashboard_data(conn, tickers_to_process=None, as_of_date=None) -> pd.Dat
                         days_ago = i
                         break
 
-            if touched_1k:
-                sma1k_str = f"${sma1000:.2f} ({days_ago}d ago)"
-            else:
-                sma1k_str = f"${sma1000:.2f}" if pd.notna(sma1000) else "N/A"
+            sma1k_value = sma1000 if pd.notna(sma1000) else np.nan
+            sma1k_touch_days = days_ago if touched_1k else np.nan
 
             df_1m = resample_and_calculate_ha(df_daily, "ME")
             df_3m = resample_and_calculate_ha(df_daily, "QE")
@@ -185,7 +183,8 @@ def get_dashboard_data(conn, tickers_to_process=None, as_of_date=None) -> pd.Dat
                     "50 SMA": sma50,
                     "100 SMA": sma100,
                     "200 SMA": sma200,
-                    "1000 SMA Touch": sma1k_str,
+                    "1000 SMA": sma1k_value,
+                    "1000 SMA Touch Days": sma1k_touch_days,
                     "calc_date": calc_date,
                 }
             )
@@ -273,16 +272,17 @@ def refresh_dashboard_cache(conn):
                         float(row["50 SMA"]) if pd.notna(row["50 SMA"]) else None,
                         float(row["100 SMA"]) if pd.notna(row["100 SMA"]) else None,
                         float(row["200 SMA"]) if pd.notna(row["200 SMA"]) else None,
-                        row["1000 SMA Touch"],
+                        float(row["1000 SMA"]) if pd.notna(row["1000 SMA"]) else None,
+                        int(row["1000 SMA Touch Days"]) if pd.notna(row["1000 SMA Touch Days"]) else None,
                     )
                     records.append(record)
 
                 insert_sql = """
-                    INSERT INTO dashboard_cache 
-                        (symbol, calculation_date, signal, trend_1m, trend_3m, price, 
-                         ema_21, sma_50, sma_100, sma_200, sma_1000_touch)
+                    INSERT INTO dashboard_cache
+                        (symbol, calculation_date, signal, trend_1m, trend_3m, price,
+                         ema_21, sma_50, sma_100, sma_200, sma_1000, sma_1000_touch_days)
                     VALUES %s
-                    ON CONFLICT (symbol) 
+                    ON CONFLICT (symbol)
                     DO UPDATE SET
                         calculation_date = EXCLUDED.calculation_date,
                         signal = EXCLUDED.signal,
@@ -293,7 +293,8 @@ def refresh_dashboard_cache(conn):
                         sma_50 = EXCLUDED.sma_50,
                         sma_100 = EXCLUDED.sma_100,
                         sma_200 = EXCLUDED.sma_200,
-                        sma_1000_touch = EXCLUDED.sma_1000_touch
+                        sma_1000 = EXCLUDED.sma_1000,
+                        sma_1000_touch_days = EXCLUDED.sma_1000_touch_days
                 """
                 execute_values(cur, insert_sql, records)
                 conn.commit()
@@ -322,7 +323,8 @@ def fetch_dashboard_cache(conn) -> pd.DataFrame:
             c.sma_50 as "50 SMA",
             c.sma_100 as "100 SMA",
             c.sma_200 as "200 SMA",
-            c.sma_1000_touch as "1000 SMA Touch"
+            c.sma_1000 as "1000 SMA",
+            c.sma_1000_touch_days as "1000 SMA Touch Days"
         FROM dashboard_cache c
         JOIN tickers t ON c.symbol = t.symbol
         WHERE c.symbol = ANY(%s)
