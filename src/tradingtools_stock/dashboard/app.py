@@ -119,9 +119,9 @@ st.markdown(
     <style>
     .st-key-settings_gear {
         position: fixed;
-        top: 0.5rem;
+        top: 0.4rem;
         right: 7.5rem;
-        z-index: 1000;
+        z-index: 999999;  /* above Streamlit's fixed header toolbar */
         width: auto;
     }
     .st-key-settings_gear button {
