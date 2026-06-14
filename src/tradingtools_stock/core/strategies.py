@@ -3,6 +3,11 @@ import warnings
 import numpy as np
 import pandas as pd
 
+# 1000-day SMA "touch" detection: a bar counts as a touch when its range comes
+# within ±5% of the 1000-day SMA, scanning the most recent 15 trading days.
+SMA_1000_TOUCH_LOOKBACK_DAYS = 15
+SMA_1000_TOUCH_BAND = 0.05
+
 
 def calculate_heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -109,21 +114,24 @@ def get_dashboard_data(conn, tickers_to_process=None, as_of_date=None) -> pd.Dat
             df_daily["sma1000"] = df_daily["close"].rolling(window=1000).mean()
             sma1000 = df_daily["sma1000"].iloc[-1] if len(df_daily) >= 1000 else np.nan
 
+            # Did price come within ±5% of the 1000-day SMA on any of the last
+            # 15 trading days? Report how many days ago the most recent touch
+            # was (0 = today). A bar touches when its [low, high] range overlaps
+            # the band [SMA*(1-0.05), SMA*(1+0.05)].
             touched_1k = False
             days_ago = -1
-            if len(df_daily) >= 10:
-                last_10 = df_daily.iloc[-10:]
-                for i in range(10):
-                    idx = 9 - i
-                    row = last_10.iloc[idx]
-                    current_sma1000 = row["sma1000"]
-                    if pd.notna(current_sma1000) and (
-                        row["low"] <= current_sma1000 * 1.05
-                        and row["high"] >= current_sma1000 * 0.95
-                    ):
-                        touched_1k = True
-                        days_ago = i
-                        break
+            lookback = min(len(df_daily), SMA_1000_TOUCH_LOOKBACK_DAYS)
+            window = df_daily.iloc[-lookback:] if lookback else df_daily.iloc[0:0]
+            for i in range(lookback):
+                row = window.iloc[lookback - 1 - i]
+                current_sma1000 = row["sma1000"]
+                if pd.notna(current_sma1000) and (
+                    row["low"] <= current_sma1000 * (1 + SMA_1000_TOUCH_BAND)
+                    and row["high"] >= current_sma1000 * (1 - SMA_1000_TOUCH_BAND)
+                ):
+                    touched_1k = True
+                    days_ago = i
+                    break
 
             sma1k_value = sma1000 if pd.notna(sma1000) else np.nan
             sma1k_touch_days = days_ago if touched_1k else np.nan

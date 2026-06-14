@@ -3,7 +3,10 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from tradingtools_stock.core.fetcher import get_db_connection
+from tradingtools_stock.core.fetcher import (
+    create_tables_if_not_exist,
+    get_db_connection,
+)
 from tradingtools_stock.core.ibkr import (
     fetch_portfolio,
     get_ib_settings,
@@ -28,6 +31,9 @@ st.markdown(
 def load_data():
     conn = get_db_connection()
     try:
+        # Ensure the schema is current (e.g. the sma_1000 columns) before
+        # reading the cache, in case the DB predates a schema migration.
+        create_tables_if_not_exist(conn)
         refresh_dashboard_cache(conn)
         df = fetch_dashboard_cache(conn)
         return df

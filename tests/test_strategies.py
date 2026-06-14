@@ -85,3 +85,21 @@ def test_1000_sma_touch_days_populated_on_touch(monkeypatch):
 
     assert row["1000 SMA Touch Days"] == 0
     assert row["1000 SMA"] == pytest.approx(100.0)
+
+
+def test_1000_sma_touch_days_uses_15_day_lookback(monkeypatch):
+    # Price sits on its 1000-day SMA 14 days ago, then gaps far above the ±5%
+    # band for the most recent 14 bars. The touch must still be reported (14
+    # days ago), which only happens with a >=15-day lookback window.
+    idx = pd.bdate_range(start="2019-01-01", periods=1100, name="date")
+    close = pd.Series(100.0, index=idx)
+    close.iloc[-14:] = 200.0  # last 14 bars gap well above the band
+    df = pd.DataFrame(
+        {"open": close, "high": close * 1.01, "low": close * 0.99, "close": close},
+        index=idx,
+    )
+    monkeypatch.setattr(strategies, "fetch_daily_data", lambda conn, sym: df.copy())
+
+    row = strategies.get_dashboard_data(None, tickers_to_process=["TEST"]).iloc[0]
+
+    assert row["1000 SMA Touch Days"] == 14
