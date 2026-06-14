@@ -65,58 +65,60 @@ def load_portfolio():
     return fetch_portfolio()
 
 
-def render_settings_menu():
-    """Upper-right gear popover holding persistent app settings."""
-    with st.popover("⚙️", help="Settings"):
-        st.markdown("**Settings**")
-        st.caption("Stored in the database; persists across restarts.")
+@st.dialog("Settings")
+def settings_dialog():
+    """Modal window holding persistent app settings."""
+    st.caption("Stored in the database; persists across restarts.")
 
+    try:
+        conn = get_db_connection()
         try:
+            current_lookback = get_sma_1000_touch_lookback(conn)
+        finally:
+            conn.close()
+
+        new_lookback = st.number_input(
+            "1000 SMA Touch Days — lookback (trading days)",
+            min_value=1,
+            max_value=250,
+            value=int(current_lookback),
+            step=1,
+            help=(
+                "How many of the most recent trading days to scan for a "
+                "price touch within ±5% of the 1000-day SMA. Used by the "
+                "'1000 SMA Touch Days' column and the '1000 SMA Strategy' "
+                "table."
+            ),
+        )
+
+        if st.button("Save settings"):
             conn = get_db_connection()
             try:
-                current_lookback = get_sma_1000_touch_lookback(conn)
+                set_sma_1000_touch_lookback(conn, int(new_lookback))
+                # Force a full recompute so the new lookback is reflected
+                # immediately rather than only when fresh price data arrives.
+                invalidate_dashboard_cache(conn)
             finally:
                 conn.close()
-
-            new_lookback = st.number_input(
-                "1000 SMA Touch Days — lookback (trading days)",
-                min_value=1,
-                max_value=250,
-                value=int(current_lookback),
-                step=1,
-                help=(
-                    "How many of the most recent trading days to scan for a "
-                    "price touch within ±5% of the 1000-day SMA. Used by the "
-                    "'1000 SMA Touch Days' column and the '1000 SMA Strategy' "
-                    "table."
-                ),
+            load_data.clear()
+            st.success(
+                f"Saved. 1000 SMA touch lookback set to {int(new_lookback)} days."
             )
-
-            if st.button("Save settings"):
-                conn = get_db_connection()
-                try:
-                    set_sma_1000_touch_lookback(conn, int(new_lookback))
-                    # Force a full recompute so the new lookback is reflected
-                    # immediately rather than only when fresh price data arrives.
-                    invalidate_dashboard_cache(conn)
-                finally:
-                    conn.close()
-                load_data.clear()
-                st.success(
-                    f"Saved. 1000 SMA touch lookback set to {int(new_lookback)} "
-                    "days."
-                )
-                st.rerun()
-        except Exception as e:
-            st.error(f"Error loading settings: {e}")
+            st.rerun()
+    except Exception as e:
+        st.error(f"Error loading settings: {e}")
 
 
 # Page header: title on the left, settings gear anchored to the upper right.
+# The gear opens the settings modal. (Streamlit's native top-right menu only
+# supports fixed Get help / Report a bug / About items, so a custom action
+# can't be added there.)
 header_left, header_right = st.columns([0.92, 0.08])
 with header_left:
     st.title("Heikin-Ashi Trends Dashboard")
 with header_right:
-    render_settings_menu()
+    if st.button("⚙️", help="Settings"):
+        settings_dialog()
 st.markdown(
     "Analyze the Heikin-Ashi color of the current and previous two periods for 1-Month and 3-Month (Calendar Quarter) views."
 )
