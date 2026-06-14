@@ -241,16 +241,52 @@ def import_tickers(
 
 
 @app.command("update-metadata")
-def update_metadata():
+def update_metadata(
+    workers: int = typer.Option(5, "--workers", "-w", help="Number of concurrent workers for fetching data"),
+):
     """
     Fetch and update sector and industry metadata for all active tickers from Yahoo Finance.
     """
     from tradingtools_stock.core.fetcher import update_tickers_metadata
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
-    console.print("Fetching metadata for tickers... This may take a few minutes.")
+    console.print(f"Fetching metadata for tickers using {workers} workers... This may take a few minutes.")
     try:
         conn = get_db_connection()
-        update_tickers_metadata(conn)
+        
+        # Get count of total tickers to update for the progress bar
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM tickers WHERE active = true AND (sector IS NULL OR industry IS NULL)"
+            )
+            total_tickers = cur.fetchone()[0]
+            
+        if total_tickers == 0:
+            console.print("[green]No tickers need metadata updates.[/]")
+            return
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            "•",
+            TextColumn("[progress.completed]{task.completed}/{task.total}"),
+            "•",
+            TimeRemainingColumn(),
+            console=console
+        ) as progress:
+            task_id = progress.add_task("[cyan]Starting...", total=total_tickers)
+            
+            def progress_callback(symbol, sector, industry, error):
+                if error:
+                    desc = f"[red]Failed {symbol}[/red]"
+                else:
+                    desc = f"[green]Updated {symbol}[/green]"
+                progress.update(task_id, advance=1, description=desc)
+
+            update_tickers_metadata(conn, workers=workers, progress_callback=progress_callback)
+            
         console.print("[green]Metadata update complete.[/]")
     except Exception as e:
         console.print(f"[bold red]Error updating metadata:[/] {e}")
@@ -258,3 +294,4 @@ def update_metadata():
     finally:
         if "conn" in locals() and conn:
             conn.close()
+

@@ -210,6 +210,12 @@ def format_yahoo_ticker(symbol: str, market: str) -> str:
         "OMXSTO": ".ST",
         "EURONEXT": ".PA",
         "LSIN": ".IL",
+        "TSE": ".T",
+        "HKEX": ".HK",
+        "NSE": ".NS",
+        "BSE": ".BO",
+        "SSE": ".SS",
+        "SZSE": ".SZ",
     }
 
     suffix = mapping.get(market, "")
@@ -539,10 +545,13 @@ def upsert_stock_data(conn, data, include_fundamentals=False):
         return len(records)
 
 
-def update_tickers_metadata(conn):
+def update_tickers_metadata(conn, workers=5, progress_callback=None):
     """
     Update sector and industry metadata for all tickers missing this information.
+    Uses ThreadPoolExecutor for concurrent fetching to optimize time.
     """
+    import concurrent.futures
+
     logging.info("Updating tickers metadata...")
     with conn.cursor() as cur:
         cur.execute(
@@ -554,15 +563,14 @@ def update_tickers_metadata(conn):
         logging.info("No tickers need metadata updates.")
         return
 
-    updated_count = 0
-    for symbol, market in rows:
+    def fetch_metadata(row):
+        symbol, market = row
+        sector = "Unknown"
+        industry = "Unknown"
         try:
             query_ticker = format_yahoo_ticker(symbol, market)
             stock = yq.Ticker(query_ticker)
             profile = stock.asset_profile
-
-            sector = "Unknown"
-            industry = "Unknown"
 
             if (
                 isinstance(profile, dict)
@@ -572,19 +580,39 @@ def update_tickers_metadata(conn):
                 data = profile[query_ticker]
                 sector = data.get("sector", "Unknown")
                 industry = data.get("industry", "Unknown")
-
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE tickers SET sector = %s, industry = %s WHERE symbol = %s",
-                    (sector, industry, symbol),
-                )
-                conn.commit()
-            updated_count += 1
-            logging.info(
-                f"Updated metadata for {symbol}: Sector={sector}, Industry={industry}"
-            )
-            time.sleep(0.5)  # Rate limiting
+                
+            return symbol, sector, industry, None
         except Exception as e:
-            logging.warning(f"Failed to update metadata for {symbol}: {e}")
+            return symbol, sector, industry, e
 
-    logging.info(f"Metadata update complete. Updated {updated_count} tickers.")
+    updated_count = 0
+    total_tickers = len(rows)
+    
+    # We fetch concurrently, but update the database synchronously to avoid DB connection issues.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        # Submit all tasks
+        future_to_symbol = {executor.submit(fetch_metadata, row): row[0] for row in rows}
+        
+        for future in concurrent.futures.as_completed(future_to_symbol):
+            symbol, sector, industry, error = future.result()
+            
+            if error:
+                logging.warning(f"Failed to fetch metadata for {symbol}: {error}")
+            else:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE tickers SET sector = %s, industry = %s WHERE symbol = %s",
+                            (sector, industry, symbol),
+                        )
+                        conn.commit()
+                    updated_count += 1
+                    logging.info(f"Updated metadata for {symbol}: Sector={sector}, Industry={industry}")
+                except Exception as e:
+                    logging.warning(f"Database error while updating {symbol}: {e}")
+            
+            # Fire progress callback if provided
+            if progress_callback:
+                progress_callback(symbol, sector, industry, error)
+
+    logging.info(f"Metadata update complete. Updated {updated_count}/{total_tickers} tickers.")
