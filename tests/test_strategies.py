@@ -103,3 +103,26 @@ def test_1000_sma_touch_days_uses_15_day_lookback(monkeypatch):
     row = strategies.get_dashboard_data(None, tickers_to_process=["TEST"]).iloc[0]
 
     assert row["1000 SMA Touch Days"] == 14
+
+
+def test_touch_lookback_param_overrides_default(monkeypatch):
+    # Same series with a touch 14 days ago: a configured lookback shorter than
+    # 14 cannot see it, while a longer one can.
+    idx = pd.bdate_range(start="2019-01-01", periods=1100, name="date")
+    close = pd.Series(100.0, index=idx)
+    close.iloc[-14:] = 200.0
+    df = pd.DataFrame(
+        {"open": close, "high": close * 1.01, "low": close * 0.99, "close": close},
+        index=idx,
+    )
+    monkeypatch.setattr(strategies, "fetch_daily_data", lambda conn, sym: df.copy())
+
+    row10 = strategies.get_dashboard_data(
+        None, tickers_to_process=["TEST"], touch_lookback_days=10
+    ).iloc[0]
+    assert pd.isna(row10["1000 SMA Touch Days"])
+
+    row20 = strategies.get_dashboard_data(
+        None, tickers_to_process=["TEST"], touch_lookback_days=20
+    ).iloc[0]
+    assert row20["1000 SMA Touch Days"] == 14

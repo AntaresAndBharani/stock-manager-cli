@@ -77,14 +77,25 @@ def resample_and_calculate_ha(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return calculate_heikin_ashi(resampled)
 
 
-def get_dashboard_data(conn, tickers_to_process=None, as_of_date=None) -> pd.DataFrame:
+def get_dashboard_data(
+    conn, tickers_to_process=None, as_of_date=None, touch_lookback_days=None
+) -> pd.DataFrame:
     """
     Get the dashboard data for given tickers, or all active if None.
 
     If ``as_of_date`` is provided, daily data is truncated to that date
     (inclusive) before any indicators are calculated, so the returned signals
     reflect what the dashboard would have shown as of that historical date.
+
+    ``touch_lookback_days`` controls how many recent trading days are scanned
+    for a 1000-day SMA touch; when ``None`` the module default
+    (:data:`SMA_1000_TOUCH_LOOKBACK_DAYS`) is used.
     """
+    lookback_days = (
+        touch_lookback_days
+        if touch_lookback_days is not None
+        else SMA_1000_TOUCH_LOOKBACK_DAYS
+    )
     # Get active tickers
     if tickers_to_process is None:
         from tradingtools_stock.core.fetcher import get_active_tickers
@@ -115,12 +126,12 @@ def get_dashboard_data(conn, tickers_to_process=None, as_of_date=None) -> pd.Dat
             sma1000 = df_daily["sma1000"].iloc[-1] if len(df_daily) >= 1000 else np.nan
 
             # Did price come within ±5% of the 1000-day SMA on any of the last
-            # 15 trading days? Report how many days ago the most recent touch
-            # was (0 = today). A bar touches when its [low, high] range overlaps
-            # the band [SMA*(1-0.05), SMA*(1+0.05)].
+            # ``lookback_days`` trading days? Report how many days ago the most
+            # recent touch was (0 = today). A bar touches when its [low, high]
+            # range overlaps the band [SMA*(1-0.05), SMA*(1+0.05)].
             touched_1k = False
             days_ago = -1
-            lookback = min(len(df_daily), SMA_1000_TOUCH_LOOKBACK_DAYS)
+            lookback = min(len(df_daily), lookback_days)
             window = df_daily.iloc[-lookback:] if lookback else df_daily.iloc[0:0]
             for i in range(lookback):
                 row = window.iloc[lookback - 1 - i]
@@ -220,11 +231,14 @@ def refresh_dashboard_cache(conn):
     """
     from psycopg2.extras import execute_values
 
+    from tradingtools_stock.core.config_store import get_sma_1000_touch_lookback
     from tradingtools_stock.core.fetcher import get_active_tickers
 
     active_tickers = get_active_tickers(conn)
     if not active_tickers:
         return
+
+    touch_lookback_days = get_sma_1000_touch_lookback(conn)
 
     stale_tickers = []
     with conn.cursor() as cur:
@@ -263,7 +277,9 @@ def refresh_dashboard_cache(conn):
 
     if stale_tickers:
         print(f"Refreshing dashboard cache for {len(stale_tickers)} tickers...")
-        df_new = get_dashboard_data(conn, stale_tickers)
+        df_new = get_dashboard_data(
+            conn, stale_tickers, touch_lookback_days=touch_lookback_days
+        )
 
         if not df_new.empty:
             with conn.cursor() as cur:
@@ -306,6 +322,19 @@ def refresh_dashboard_cache(conn):
                 """
                 execute_values(cur, insert_sql, records)
                 conn.commit()
+
+
+def invalidate_dashboard_cache(conn):
+    """Mark every cached row stale so the next refresh recomputes it.
+
+    Used after a configuration change (e.g. the 1000 SMA touch lookback) so the
+    new setting takes effect immediately rather than waiting for fresh price
+    data. Clearing ``calculation_date`` makes ``refresh_dashboard_cache`` treat
+    each ticker as stale.
+    """
+    with conn.cursor() as cur:
+        cur.execute("UPDATE dashboard_cache SET calculation_date = NULL")
+        conn.commit()
 
 
 def fetch_dashboard_cache(conn) -> pd.DataFrame:
