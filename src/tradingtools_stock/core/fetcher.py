@@ -132,9 +132,41 @@ def create_tables_if_not_exist(conn):
                 sma_50 DECIMAL(18, 6),
                 sma_100 DECIMAL(18, 6),
                 sma_200 DECIMAL(18, 6),
-                sma_1000_touch VARCHAR(50),
+                sma_1000 DECIMAL(18, 6),
+                sma_1000_touch_days INT,
                 FOREIGN KEY (symbol) REFERENCES tickers(symbol)
             );
+            """
+        )
+
+        # Migrate dashboard_cache: replace sma_1000_touch (VARCHAR) with two
+        # typed columns sma_1000 (DECIMAL) and sma_1000_touch_days (INT).
+        cur.execute(
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'dashboard_cache'
+                      AND column_name = 'sma_1000_touch'
+                ) THEN
+                    ALTER TABLE dashboard_cache DROP COLUMN sma_1000_touch;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'dashboard_cache'
+                      AND column_name = 'sma_1000'
+                ) THEN
+                    ALTER TABLE dashboard_cache ADD COLUMN sma_1000 DECIMAL(18, 6);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'dashboard_cache'
+                      AND column_name = 'sma_1000_touch_days'
+                ) THEN
+                    ALTER TABLE dashboard_cache ADD COLUMN sma_1000_touch_days INT;
+                END IF;
+            END $$;
             """
         )
 
