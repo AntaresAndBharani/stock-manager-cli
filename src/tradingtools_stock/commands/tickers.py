@@ -247,8 +247,16 @@ def update_metadata(
     """
     Fetch and update sector and industry metadata for all active tickers from Yahoo Finance.
     """
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        SpinnerColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+
     from tradingtools_stock.core.fetcher import update_tickers_metadata
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
     console.print(f"Fetching metadata for tickers using {workers} workers... This may take a few minutes.")
     try:

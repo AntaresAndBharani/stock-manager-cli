@@ -16,8 +16,9 @@ jobs:
       - name: Check version bump
         if: github.event_name == 'pull_request'
         run: |
-          BASE_VERSION=$(git show origin/${{ github.base_ref }}:pyproject.toml | grep -E '^version = ' | awk -F '"' '{print $2}')
-          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | awk -F '"' '{print $2}')
+          VERSION_FILE=src/tradingtools_stock/__init__.py
+          BASE_VERSION=$(git show origin/${{ github.base_ref }}:$VERSION_FILE | grep -E '__version__' | awk -F '"' '{print $2}')
+          CURRENT_VERSION=$(grep -E '__version__' $VERSION_FILE | awk -F '"' '{print $2}')
           
           echo "Base version: $BASE_VERSION"
           echo "Current version: $CURRENT_VERSION"
