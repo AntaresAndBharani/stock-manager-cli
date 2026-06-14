@@ -109,16 +109,34 @@ def settings_dialog():
         st.error(f"Error loading settings: {e}")
 
 
-# Page header: title on the left, settings gear anchored to the upper right.
-# The gear opens the settings modal. (Streamlit's native top-right menu only
-# supports fixed Get help / Report a bug / About items, so a custom action
-# can't be added there.)
-header_left, header_right = st.columns([0.92, 0.08])
-with header_left:
-    st.title("Heikin-Ashi Trends Dashboard")
-with header_right:
-    if st.button("⚙️", help="Settings"):
-        settings_dialog()
+# Pin the settings gear into the top-right header toolbar, in line with
+# Streamlit's own Deploy / menu controls. Streamlit exposes no API to add a
+# widget to that toolbar, so we fix-position our real button there via CSS
+# (targeting the `st-key-settings_gear` wrapper class). The `right` offset
+# leaves room for the Deploy button + menu; tune it if your toolbar differs.
+st.markdown(
+    """
+    <style>
+    .st-key-settings_gear {
+        position: fixed;
+        top: 0.5rem;
+        right: 7.5rem;
+        z-index: 1000;
+        width: auto;
+    }
+    .st-key-settings_gear button {
+        padding: 0.15rem 0.5rem;
+        border: none;
+        background: transparent;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+if st.button("⚙️", key="settings_gear", help="Settings"):
+    settings_dialog()
+
+st.title("Heikin-Ashi Trends Dashboard")
 st.markdown(
     "Analyze the Heikin-Ashi color of the current and previous two periods for 1-Month and 3-Month (Calendar Quarter) views."
 )
