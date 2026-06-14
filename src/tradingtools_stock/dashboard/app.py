@@ -26,6 +26,11 @@ from tradingtools_stock.core.strategies import (
 
 st.set_page_config(page_title="Trading Tools Dashboard", layout="wide")
 
+st.title("Heikin-Ashi Trends Dashboard")
+st.markdown(
+    "Analyze the Heikin-Ashi color of the current and previous two periods for 1-Month and 3-Month (Calendar Quarter) views."
+)
+
 
 @st.cache_data(ttl=3600)
 def load_data():
@@ -65,85 +70,14 @@ def load_portfolio():
     return fetch_portfolio()
 
 
-@st.dialog("Settings")
-def settings_dialog():
-    """Modal window holding persistent app settings."""
-    st.caption("Stored in the database; persists across restarts.")
-
-    try:
-        conn = get_db_connection()
-        try:
-            current_lookback = get_sma_1000_touch_lookback(conn)
-        finally:
-            conn.close()
-
-        new_lookback = st.number_input(
-            "1000 SMA Touch Days — lookback (trading days)",
-            min_value=1,
-            max_value=250,
-            value=int(current_lookback),
-            step=1,
-            help=(
-                "How many of the most recent trading days to scan for a "
-                "price touch within ±5% of the 1000-day SMA. Used by the "
-                "'1000 SMA Touch Days' column and the '1000 SMA Strategy' "
-                "table."
-            ),
-        )
-
-        if st.button("Save settings"):
-            conn = get_db_connection()
-            try:
-                set_sma_1000_touch_lookback(conn, int(new_lookback))
-                # Force a full recompute so the new lookback is reflected
-                # immediately rather than only when fresh price data arrives.
-                invalidate_dashboard_cache(conn)
-            finally:
-                conn.close()
-            load_data.clear()
-            st.success(
-                f"Saved. 1000 SMA touch lookback set to {int(new_lookback)} days."
-            )
-            st.rerun()
-    except Exception as e:
-        st.error(f"Error loading settings: {e}")
-
-
-# Pin the settings gear into the top-right header toolbar, in line with
-# Streamlit's own Deploy / menu controls. Streamlit exposes no API to add a
-# widget to that toolbar, so we fix-position our real button there via CSS
-# (targeting the `st-key-settings_gear` wrapper class). The `right` offset
-# leaves room for the Deploy button + menu; tune it if your toolbar differs.
-st.markdown(
-    """
-    <style>
-    .st-key-settings_gear {
-        position: fixed;
-        top: 0.4rem;
-        right: 7.5rem;
-        z-index: 999999;  /* above Streamlit's fixed header toolbar */
-        width: auto;
-    }
-    .st-key-settings_gear button {
-        padding: 0.15rem 0.5rem;
-        border: none;
-        background: transparent;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-if st.button("⚙️", key="settings_gear", help="Settings"):
-    settings_dialog()
-
-st.title("Heikin-Ashi Trends Dashboard")
-st.markdown(
-    "Analyze the Heikin-Ashi color of the current and previous two periods for 1-Month and 3-Month (Calendar Quarter) views."
-)
-
-
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Dashboard", "Backtesting", "Sector & Industry Analysis", "IBKR Portfolio"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    [
+        "Dashboard",
+        "Backtesting",
+        "Sector & Industry Analysis",
+        "IBKR Portfolio",
+        "Admin",
+    ]
 )
 
 with tab1:  # noqa: SIM117
@@ -801,3 +735,46 @@ with tab4:
                     "Make sure you are logged into IB Gateway and the API is "
                     "enabled (Configure > Settings > API > Settings)."
                 )
+
+with tab5:
+    st.subheader("Admin Settings")
+    st.caption(
+        "These settings are stored in the database and persist across restarts."
+    )
+
+    try:
+        conn = get_db_connection()
+        try:
+            current_lookback = get_sma_1000_touch_lookback(conn)
+        finally:
+            conn.close()
+
+        new_lookback = st.number_input(
+            "1000 SMA Touch Days — lookback window (trading days)",
+            min_value=1,
+            max_value=250,
+            value=int(current_lookback),
+            step=1,
+            help=(
+                "How many of the most recent trading days to scan for a price "
+                "touch within ±5% of the 1000-day SMA. Used by the "
+                "'1000 SMA Touch Days' column and the '1000 SMA Strategy' table."
+            ),
+        )
+
+        if st.button("Save settings"):
+            conn = get_db_connection()
+            try:
+                set_sma_1000_touch_lookback(conn, int(new_lookback))
+                # Force a full recompute so the new lookback is reflected
+                # immediately rather than only when fresh price data arrives.
+                invalidate_dashboard_cache(conn)
+            finally:
+                conn.close()
+            load_data.clear()
+            st.success(
+                f"Saved. 1000 SMA touch lookback set to {int(new_lookback)} "
+                "days. The dashboard will recompute on the next load."
+            )
+    except Exception as e:
+        st.error(f"Error loading admin settings: {e}")
