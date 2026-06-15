@@ -60,7 +60,10 @@ def load_data_asof(as_of_date):
     """Recompute the dashboard signals as of a historical date (uncached path)."""
     conn = get_db_connection()
     try:
-        return get_dashboard_data(conn, as_of_date=as_of_date)
+        lookback = get_sma_1000_touch_lookback(conn)
+        return get_dashboard_data(
+            conn, as_of_date=as_of_date, touch_lookback_days=lookback
+        )
     finally:
         conn.close()
 
@@ -763,18 +766,24 @@ with tab5:
         )
 
         if st.button("Save settings"):
+            changed = int(new_lookback) != int(current_lookback)
             conn = get_db_connection()
             try:
                 set_sma_1000_touch_lookback(conn, int(new_lookback))
-                # Force a full recompute so the new lookback is reflected
-                # immediately rather than only when fresh price data arrives.
-                invalidate_dashboard_cache(conn)
+                if changed:
+                    # Force a full recompute so the new lookback is reflected
+                    # immediately rather than only when fresh price data arrives.
+                    invalidate_dashboard_cache(conn)
             finally:
                 conn.close()
-            load_data.clear()
-            st.success(
-                f"Saved. 1000 SMA touch lookback set to {int(new_lookback)} "
-                "days. The dashboard will recompute on the next load."
+            if changed:
+                # Drop the memoised results so the dashboard recomputes with the
+                # new lookback, then rerun so the visible tables update now.
+                load_data.clear()
+                load_data_asof.clear()
+            st.toast(
+                f"Saved. 1000 SMA touch lookback set to {int(new_lookback)} days."
             )
+            st.rerun()
     except Exception as e:
         st.error(f"Error loading admin settings: {e}")
