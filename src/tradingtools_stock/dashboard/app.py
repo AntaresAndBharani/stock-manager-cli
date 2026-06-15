@@ -3,6 +3,10 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from tradingtools_stock.core.config_store import (
+    get_sma_1000_touch_lookback,
+    set_sma_1000_touch_lookback,
+)
 from tradingtools_stock.core.fetcher import (
     create_tables_if_not_exist,
     get_db_connection,
@@ -15,6 +19,7 @@ from tradingtools_stock.core.ibkr import (
 from tradingtools_stock.core.strategies import (
     fetch_dashboard_cache,
     get_dashboard_data,
+    invalidate_dashboard_cache,
     refresh_dashboard_cache,
     run_backtest,
 )
@@ -65,8 +70,14 @@ def load_portfolio():
     return fetch_portfolio()
 
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Dashboard", "Backtesting", "Sector & Industry Analysis", "IBKR Portfolio"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    [
+        "Dashboard",
+        "Backtesting",
+        "Sector & Industry Analysis",
+        "IBKR Portfolio",
+        "Admin",
+    ]
 )
 
 with tab1:  # noqa: SIM117
@@ -724,3 +735,46 @@ with tab4:
                     "Make sure you are logged into IB Gateway and the API is "
                     "enabled (Configure > Settings > API > Settings)."
                 )
+
+with tab5:
+    st.subheader("Admin Settings")
+    st.caption(
+        "These settings are stored in the database and persist across restarts."
+    )
+
+    try:
+        conn = get_db_connection()
+        try:
+            current_lookback = get_sma_1000_touch_lookback(conn)
+        finally:
+            conn.close()
+
+        new_lookback = st.number_input(
+            "1000 SMA Touch Days — lookback window (trading days)",
+            min_value=1,
+            max_value=250,
+            value=int(current_lookback),
+            step=1,
+            help=(
+                "How many of the most recent trading days to scan for a price "
+                "touch within ±5% of the 1000-day SMA. Used by the "
+                "'1000 SMA Touch Days' column and the '1000 SMA Strategy' table."
+            ),
+        )
+
+        if st.button("Save settings"):
+            conn = get_db_connection()
+            try:
+                set_sma_1000_touch_lookback(conn, int(new_lookback))
+                # Force a full recompute so the new lookback is reflected
+                # immediately rather than only when fresh price data arrives.
+                invalidate_dashboard_cache(conn)
+            finally:
+                conn.close()
+            load_data.clear()
+            st.success(
+                f"Saved. 1000 SMA touch lookback set to {int(new_lookback)} "
+                "days. The dashboard will recompute on the next load."
+            )
+    except Exception as e:
+        st.error(f"Error loading admin settings: {e}")

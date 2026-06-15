@@ -170,6 +170,19 @@ def create_tables_if_not_exist(conn):
             """
         )
 
+        # Create app_config table (persistent key/value settings, e.g. the
+        # admin-configurable 1000 SMA touch lookback).
+        logging.debug("Ensuring 'app_config' table exists")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_config (
+                key VARCHAR(100) PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
         # Create indexes
         logging.debug("Ensuring indexes exist")
         cur.execute(
