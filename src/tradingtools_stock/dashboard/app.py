@@ -670,9 +670,10 @@ with tab3:
 with tab4:  # noqa: SIM117
     st.header("Valuation")
     st.markdown(
-        "Per-stock valuation multiples, their ~5-year history, and how each "
-        "compares to the sector. Data: `tradingtools-stock fetch valuation` "
-        "(Yahoo Finance)."
+        "Sector (or global) valuation index, a table of every stock's "
+        "multiples, and a per-stock ~5-year history. Filter by sector below; "
+        "with no filter the summary aggregates the whole universe. "
+        "Data: `tradingtools-stock fetch valuation` (Yahoo Finance)."
     )
 
     with st.spinner("Loading valuation data..."):
@@ -688,16 +689,121 @@ with tab4:  # noqa: SIM117
                     "`tradingtools-stock fetch valuation`."
                 )
             else:
-                selected = st.selectbox(
-                    "Ticker", options=active_symbols, key="valuation_ticker"
+                # ---- Sector filter (no selection -> global aggregation) ----
+                sectors = sorted(latest["sector"].dropna().unique())
+                sector_choice = (
+                    st.selectbox(
+                        "Sector filter",
+                        options=["All sectors"] + sectors,
+                        key="valuation_sector_filter",
+                    )
+                    or "All sectors"
+                )
+                if sector_choice == "All sectors":
+                    scope = latest
+                    scope_label = "All sectors (global)"
+                else:
+                    scope = latest[latest["sector"] == sector_choice]
+                    scope_label = sector_choice
+
+                # ---- Sector / global valuation index ----
+                st.subheader(f"{scope_label} — valuation index")
+                agg = valuation.aggregate_valuation(scope)
+                st.caption(f"Median multiples across {agg['count']} valued stocks.")
+
+                def render_index_tile(col, metric):
+                    tile_label = valuation.VALUATION_METRICS[metric]
+                    med = agg.get(metric)
+                    if med is None:
+                        col.metric(tile_label, "N/A")
+                        return
+                    is_yield = metric == "dividend_yield"
+                    col.metric(
+                        tile_label,
+                        f"{med * 100:.2f}%" if is_yield else f"{med:.1f}",
+                    )
+
+                idx_metrics = list(valuation.VALUATION_METRICS)
+                idx_top = st.columns(4)
+                for i, metric in enumerate(idx_metrics[:4]):
+                    render_index_tile(idx_top[i], metric)
+                idx_bot = st.columns(4)
+                for i, metric in enumerate(idx_metrics[4:]):
+                    render_index_tile(idx_bot[i], metric)
+
+                # ---- Stocks table ----
+                # Format to strings ("" for missing) so empty cells render
+                # blank: st.dataframe prints the literal "None" for a numeric
+                # NaN/null regardless of column_config or Styler na_rep.
+                st.subheader(f"Stocks ({len(scope)})")
+                table = valuation.stocks_table(scope)
+
+                def _fmt_col(series, decimals, scale=1.0):
+                    return series.map(
+                        lambda v: (
+                            "" if pd.isna(v) else f"{float(v) * scale:.{decimals}f}"
+                        )
+                    )
+
+                disp = pd.DataFrame(
+                    {"Ticker": table["symbol"], "Sector": table["sector"]}
+                )
+                disp["Trailing P/E"] = _fmt_col(table["trailing_pe"], 1)
+                disp["Forward P/E"] = _fmt_col(table["forward_pe"], 1)
+                disp["P/B"] = _fmt_col(table["pb"], 1)
+                disp["P/S"] = _fmt_col(table["ps"], 1)
+                disp["PEG"] = _fmt_col(table["peg"], 2)
+                disp["EV/EBITDA"] = _fmt_col(table["ev_ebitda"], 1)
+                disp["EV/Revenue"] = _fmt_col(table["ev_revenue"], 1)
+                disp["Div Yield %"] = _fmt_col(table["dividend_yield"], 2, 100.0)
+
+                # Colour each metric against the index (the summary medians
+                # above): below the index -> red, above -> green.
+                index_cols = {
+                    "Trailing P/E": "trailing_pe",
+                    "Forward P/E": "forward_pe",
+                    "P/B": "pb",
+                    "P/S": "ps",
+                    "PEG": "peg",
+                    "EV/EBITDA": "ev_ebitda",
+                    "EV/Revenue": "ev_revenue",
+                    "Div Yield %": "dividend_yield",
+                }
+
+                def _cell_color(value, median):
+                    if pd.isna(value) or median is None or median <= 0:
+                        return ""
+                    if value < median:
+                        return "color: #ff5555; font-weight: bold;"
+                    if value > median:
+                        return "color: #00ff00; font-weight: bold;"
+                    return ""
+
+                def color_vs_index(frame):
+                    styles = pd.DataFrame("", index=frame.index, columns=frame.columns)
+                    for disp_col, metric in index_cols.items():
+                        med = agg.get(metric)
+                        styles[disp_col] = table[metric].map(
+                            lambda v, m=med: _cell_color(v, m)
+                        )
+                    return styles
+
+                st.dataframe(
+                    disp.style.apply(color_vs_index, axis=None),
+                    hide_index=True,
+                    width="stretch",
                 )
 
-                sel_rows = latest[latest["symbol"] == selected]
+                # ---- Per-stock detail ----
+                st.subheader("Stock detail")
+                detail_symbols = sorted(scope["symbol"].unique())
+                selected = st.selectbox(
+                    "Ticker", options=detail_symbols, key="valuation_ticker"
+                )
+
+                sel_rows = scope[scope["symbol"] == selected]
                 if sel_rows.empty:
-                    st.info(
-                        f"No valuation history for {selected}. Run "
-                        "`tradingtools-stock fetch valuation` to fetch it."
-                    )
+                    st.info("Select a ticker to see its history.")
                 else:
                     row = sel_rows.iloc[0]
                     sector = row["sector"]
@@ -732,7 +838,11 @@ with tab4:  # noqa: SIM117
                                 else f"Sector median: {med:.1f}"
                             )
                         # Lower multiple = cheaper -> green when below the sector.
-                        color = "inverse" if metric in valuation.LOWER_IS_CHEAPER else "normal"
+                        color = (
+                            "inverse"
+                            if metric in valuation.LOWER_IS_CHEAPER
+                            else "normal"
+                        )
                         col.metric(
                             tile_label,
                             display,

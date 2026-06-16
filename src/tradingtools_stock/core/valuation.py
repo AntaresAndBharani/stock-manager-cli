@@ -171,3 +171,47 @@ def compute_sector_median_series(sector_hist: pd.DataFrame, metric: str) -> pd.S
     if frame.empty:
         return pd.Series(dtype="float64")
     return frame.groupby("as_of_date")["_v"].median().sort_index()
+
+
+# Metric columns shown (in order) in the per-stock fundamentals table — the
+# same eight multiples as the snapshot tiles.
+STOCK_TABLE_METRICS = (
+    "trailing_pe",
+    "forward_pe",
+    "pb",
+    "ps",
+    "peg",
+    "ev_ebitda",
+    "ev_revenue",
+    "dividend_yield",
+)
+
+
+def aggregate_valuation(latest_df: pd.DataFrame) -> dict:
+    """Median of each metric over positive values, plus the in-scope stock count.
+
+    Drives the sector (or, when unfiltered, global) "valuation index" summary.
+    Returns ``{metric: median_or_None, ..., "count": n}``.
+    """
+    result: dict = {}
+    for metric in VALUATION_METRICS:
+        if latest_df.empty or metric not in latest_df.columns:
+            result[metric] = None
+            continue
+        values = _positive(latest_df[metric])
+        result[metric] = float(values.median()) if not values.empty else None
+    result["count"] = 0 if latest_df.empty else int(len(latest_df))
+    return result
+
+
+def stocks_table(latest_df: pd.DataFrame) -> pd.DataFrame:
+    """One row per stock with its latest fundamental multiples, sorted by ticker."""
+    columns = ["symbol", "sector", *STOCK_TABLE_METRICS]
+    if latest_df.empty:
+        return pd.DataFrame(columns=columns)
+    present = [c for c in columns if c in latest_df.columns]
+    out = latest_df[present].copy()
+    for col in STOCK_TABLE_METRICS:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out.sort_values("symbol").reset_index(drop=True)

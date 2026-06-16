@@ -2,11 +2,14 @@ import pandas as pd
 import pytest
 
 from tradingtools_stock.core.valuation import (
+    STOCK_TABLE_METRICS,
     _dedupe_periods,
+    aggregate_valuation,
     compute_sector_median_series,
     compute_stats,
     sector_median,
     sector_sample_size,
+    stocks_table,
 )
 
 
@@ -73,6 +76,53 @@ def test_sector_median_none_when_no_valid_values() -> None:
     df = pd.DataFrame({"symbol": ["X"], "sector": ["Tech"], "trailing_pe": [-3.0]})
     assert sector_median(df, "Tech", "trailing_pe") is None
     assert sector_sample_size(df, "Tech", "trailing_pe") == 0
+
+
+def _scope_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "symbol": ["AAA", "BBB", "CCC"],
+            "sector": ["Tech", "Tech", "Tech"],
+            "trailing_pe": [10.0, 20.0, -5.0],  # CCC loss -> excluded from median
+            "forward_pe": [8.0, 16.0, 12.0],
+            "pb": [1.0, 3.0, 2.0],
+            "ps": [2.0, 4.0, 6.0],
+            "peg": [1.0, 2.0, 3.0],
+            "ev_ebitda": [5.0, 7.0, 9.0],
+            "ev_revenue": [1.5, 2.5, 3.5],
+            "dividend_yield": [0.01, 0.02, 0.03],
+            "market_cap": [3e11, 1e11, 2e11],
+        }
+    )
+
+
+def test_aggregate_valuation_medians_and_count() -> None:
+    agg = aggregate_valuation(_scope_df())
+    assert agg["count"] == 3
+    assert agg["trailing_pe"] == pytest.approx(15.0)  # median of 10, 20
+    assert agg["forward_pe"] == pytest.approx(12.0)
+    assert agg["dividend_yield"] == pytest.approx(0.02)
+
+
+def test_aggregate_valuation_empty() -> None:
+    agg = aggregate_valuation(pd.DataFrame())
+    assert agg["count"] == 0
+    assert agg["trailing_pe"] is None
+
+
+def test_stocks_table_sorted_by_ticker() -> None:
+    table = stocks_table(_scope_df())
+    assert list(table["symbol"]) == ["AAA", "BBB", "CCC"]
+    assert "market_cap" not in table.columns
+    for metric in STOCK_TABLE_METRICS:
+        assert metric in table.columns
+
+
+def test_stocks_table_empty_has_columns() -> None:
+    table = stocks_table(pd.DataFrame())
+    assert table.empty
+    assert "symbol" in table.columns
+    assert "trailing_pe" in table.columns
 
 
 def test_compute_sector_median_series_per_quarter() -> None:
