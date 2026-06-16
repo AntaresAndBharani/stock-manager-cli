@@ -756,7 +756,43 @@ with tab4:  # noqa: SIM117
                 disp["EV/EBITDA"] = _fmt_col(table["ev_ebitda"], 1)
                 disp["EV/Revenue"] = _fmt_col(table["ev_revenue"], 1)
                 disp["Div Yield %"] = _fmt_col(table["dividend_yield"], 2, 100.0)
-                st.dataframe(disp, hide_index=True, width="stretch")
+
+                # Colour each metric against the index (the summary medians
+                # above): below the index -> red, above -> green.
+                index_cols = {
+                    "Trailing P/E": "trailing_pe",
+                    "Forward P/E": "forward_pe",
+                    "P/B": "pb",
+                    "P/S": "ps",
+                    "PEG": "peg",
+                    "EV/EBITDA": "ev_ebitda",
+                    "EV/Revenue": "ev_revenue",
+                    "Div Yield %": "dividend_yield",
+                }
+
+                def _cell_color(value, median):
+                    if pd.isna(value) or median is None or median <= 0:
+                        return ""
+                    if value < median:
+                        return "color: #ff5555; font-weight: bold;"
+                    if value > median:
+                        return "color: #00ff00; font-weight: bold;"
+                    return ""
+
+                def color_vs_index(frame):
+                    styles = pd.DataFrame("", index=frame.index, columns=frame.columns)
+                    for disp_col, metric in index_cols.items():
+                        med = agg.get(metric)
+                        styles[disp_col] = table[metric].map(
+                            lambda v, m=med: _cell_color(v, m)
+                        )
+                    return styles
+
+                st.dataframe(
+                    disp.style.apply(color_vs_index, axis=None),
+                    hide_index=True,
+                    width="stretch",
+                )
 
                 # ---- Per-stock detail ----
                 st.subheader("Stock detail")
