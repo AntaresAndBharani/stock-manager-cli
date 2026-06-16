@@ -3,12 +3,14 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from tradingtools_stock.core import valuation
 from tradingtools_stock.core.config_store import (
     get_sma_1000_touch_lookback,
     set_sma_1000_touch_lookback,
 )
 from tradingtools_stock.core.fetcher import (
     create_tables_if_not_exist,
+    get_active_tickers,
     get_db_connection,
 )
 from tradingtools_stock.core.ibkr import (
@@ -70,11 +72,50 @@ def load_portfolio():
     return fetch_portfolio()
 
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
+@st.cache_data(ttl=3600)
+def load_active_symbols():
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return sorted(get_active_tickers(conn))
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=3600)
+def load_latest_valuation():
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return valuation.fetch_latest_valuation(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=3600)
+def load_valuation_history(symbol):
+    conn = get_db_connection()
+    try:
+        return valuation.fetch_valuation_history(conn, symbol)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=3600)
+def load_sector_valuation_history(sector):
+    conn = get_db_connection()
+    try:
+        return valuation.fetch_sector_valuation_history(conn, sector)
+    finally:
+        conn.close()
+
+
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     [
         "Dashboard",
         "Backtesting",
         "Sector & Industry Analysis",
+        "Valuation",
         "IBKR Portfolio",
         "Admin",
     ]
@@ -170,7 +211,9 @@ with tab1:  # noqa: SIM117
                     "100 SMA": st.column_config.NumberColumn(format="$%.2f"),
                     "200 SMA": st.column_config.NumberColumn(format="$%.2f"),
                     "1000 SMA": st.column_config.NumberColumn(format="$%.2f"),
-                    "1000 SMA Touch Days": st.column_config.NumberColumn(format="%d d ago"),
+                    "1000 SMA Touch Days": st.column_config.NumberColumn(
+                        format="%d d ago"
+                    ),
                 }
 
                 st.subheader(f"Entries ({len(df_entries)})")
@@ -186,9 +229,7 @@ with tab1:  # noqa: SIM117
 
                 # Compare against the signals as of an earlier date (default: 1
                 # month ago). Recomputed on demand from full price history.
-                show_asof = st.toggle(
-                    "Compare with an earlier date", value=True
-                )
+                show_asof = st.toggle("Compare with an earlier date", value=True)
                 if show_asof:
                     today = pd.Timestamp.today().normalize()
                     default_asof = (today.replace(day=1) - pd.Timedelta(days=1)).date()
@@ -207,18 +248,14 @@ with tab1:  # noqa: SIM117
                         df_asof = df_asof.merge(df_meta, on="Ticker", how="left")
                         df_asof = df_asof.reindex(columns=df.columns)
                         if selected_sectors:
-                            df_asof = df_asof[
-                                df_asof["Sector"].isin(selected_sectors)
-                            ]
+                            df_asof = df_asof[df_asof["Sector"].isin(selected_sectors)]
                         if selected_industries:
                             df_asof = df_asof[
                                 df_asof["Industry"].isin(selected_industries)
                             ]
 
                         df_asof_entries = df_asof[df_asof["Signal"] != "⚪ None"]
-                        st.subheader(
-                            f"Entries as of {as_of} ({len(df_asof_entries)})"
-                        )
+                        st.subheader(f"Entries as of {as_of} ({len(df_asof_entries)})")
                         if not df_asof_entries.empty:
                             st.dataframe(
                                 df_asof_entries.style.apply(highlight_mas, axis=1),
@@ -630,7 +667,212 @@ with tab3:
         except Exception as e:
             st.error(f"Error loading analysis data: {e}")
 
-with tab4:
+with tab4:  # noqa: SIM117
+    st.header("Valuation")
+    st.markdown(
+        "Per-stock valuation multiples, their ~5-year history, and how each "
+        "compares to the sector. Data: `tradingtools-stock fetch valuation` "
+        "(Yahoo Finance)."
+    )
+
+    with st.spinner("Loading valuation data..."):
+        try:
+            latest = load_latest_valuation()
+            active_symbols = load_active_symbols()
+
+            if not active_symbols:
+                st.warning("No active tickers found.")
+            elif latest.empty:
+                st.warning(
+                    "No valuation data yet. Populate it with "
+                    "`tradingtools-stock fetch valuation`."
+                )
+            else:
+                selected = st.selectbox(
+                    "Ticker", options=active_symbols, key="valuation_ticker"
+                )
+
+                sel_rows = latest[latest["symbol"] == selected]
+                if sel_rows.empty:
+                    st.info(
+                        f"No valuation history for {selected}. Run "
+                        "`tradingtools-stock fetch valuation` to fetch it."
+                    )
+                else:
+                    row = sel_rows.iloc[0]
+                    sector = row["sector"]
+                    as_of = pd.to_datetime(row["as_of_date"]).date()
+                    st.caption(f"Sector: **{sector}** · latest data as of {as_of}")
+
+                    # Current sector median for each metric (drives the badges).
+                    sector_meds = {
+                        m: valuation.sector_median(latest, sector, m)
+                        for m in valuation.VALUATION_METRICS
+                    }
+
+                    # ---- A. Current snapshot + B. vs-sector badges ----
+                    def render_tile(col, metric):
+                        tile_label = valuation.VALUATION_METRICS[metric]
+                        raw = pd.to_numeric(row.get(metric), errors="coerce")
+                        med = sector_meds.get(metric)
+                        is_yield = metric == "dividend_yield"
+                        if pd.isna(raw) or raw <= 0:
+                            note = "N/A (loss)" if metric == "trailing_pe" else "N/A"
+                            col.metric(tile_label, note)
+                            return
+                        display = f"{raw * 100:.2f}%" if is_yield else f"{raw:.1f}"
+                        delta = None
+                        help_txt = None
+                        if med is not None and med > 0:
+                            diff = (raw / med - 1) * 100
+                            delta = f"{diff:+.0f}% vs sector"
+                            help_txt = (
+                                f"Sector median: {med * 100:.2f}%"
+                                if is_yield
+                                else f"Sector median: {med:.1f}"
+                            )
+                        # Lower multiple = cheaper -> green when below the sector.
+                        color = "inverse" if metric in valuation.LOWER_IS_CHEAPER else "normal"
+                        col.metric(
+                            tile_label,
+                            display,
+                            delta=delta,
+                            delta_color=color,
+                            help=help_txt,
+                        )
+
+                    metrics_order = list(valuation.VALUATION_METRICS)
+                    cols_top = st.columns(4)
+                    for i, metric in enumerate(metrics_order[:4]):
+                        render_tile(cols_top[i], metric)
+                    cols_bot = st.columns(4)
+                    for i, metric in enumerate(metrics_order[4:]):
+                        render_tile(cols_bot[i], metric)
+
+                    if valuation.sector_sample_size(latest, sector, "trailing_pe") < 3:
+                        st.caption(
+                            "⚠️ Fewer than 3 valued stocks in this sector — "
+                            "read the sector comparison with caution."
+                        )
+
+                    # ---- C. Historical chart ----
+                    st.subheader("History")
+                    metric_key = st.selectbox(
+                        "Metric",
+                        options=list(valuation.CHARTABLE_METRICS),
+                        format_func=lambda k: valuation.CHARTABLE_METRICS[k],
+                        key="valuation_metric",
+                    )
+                    label = valuation.CHARTABLE_METRICS[metric_key]
+
+                    hist = load_valuation_history(selected)
+                    series = hist[["as_of_date", metric_key]].copy()
+                    series[metric_key] = pd.to_numeric(
+                        series[metric_key], errors="coerce"
+                    )
+                    series = series.dropna()
+                    series = series[series[metric_key] > 0]
+
+                    if series.empty:
+                        st.info(f"No positive {label} history for {selected}.")
+                    else:
+                        stats = valuation.compute_stats(
+                            series.set_index("as_of_date")[metric_key]
+                        )
+                        # series is non-empty and positive, so stats is present.
+                        assert stats is not None
+                        lo, hi = stats["min"], stats["max"]
+                        band = pd.DataFrame(
+                            {
+                                "as_of_date": [
+                                    series["as_of_date"].min(),
+                                    series["as_of_date"].max(),
+                                ],
+                                "lo": [lo, lo],
+                                "hi": [hi, hi],
+                            }
+                        )
+                        band_layer = (
+                            alt.Chart(band)
+                            .mark_area(opacity=0.12, color="#888888")
+                            .encode(x="as_of_date:T", y="lo:Q", y2="hi:Q")
+                        )
+                        line = (
+                            alt.Chart(series)
+                            .mark_line(color="#4c9be8")
+                            .encode(
+                                x=alt.X("as_of_date:T", title=None),
+                                y=alt.Y(f"{metric_key}:Q", title=label),
+                                tooltip=[
+                                    alt.Tooltip("as_of_date:T", title="Quarter"),
+                                    alt.Tooltip(
+                                        f"{metric_key}:Q", title=label, format=".2f"
+                                    ),
+                                ],
+                            )
+                        )
+                        mean_rule = (
+                            alt.Chart(pd.DataFrame({"y": [stats["mean"]]}))
+                            .mark_rule(color="#cccccc", strokeDash=[4, 4])
+                            .encode(y="y:Q")
+                        )
+                        current_point = (
+                            alt.Chart(series.iloc[[-1]])
+                            .mark_point(color="#4c9be8", size=90, filled=True)
+                            .encode(x="as_of_date:T", y=f"{metric_key}:Q")
+                        )
+                        layers = band_layer + line + mean_rule + current_point
+
+                        sector_hist = load_sector_valuation_history(sector)
+                        sector_series = valuation.compute_sector_median_series(
+                            sector_hist, metric_key
+                        )
+                        if not sector_series.empty:
+                            sector_df = sector_series.reset_index()
+                            sector_df.columns = ["as_of_date", "sector_med"]
+                            layers = layers + (
+                                alt.Chart(sector_df)
+                                .mark_line(color="#e8a14c", strokeDash=[2, 2])
+                                .encode(
+                                    x="as_of_date:T",
+                                    y="sector_med:Q",
+                                    tooltip=[
+                                        alt.Tooltip("as_of_date:T", title="Quarter"),
+                                        alt.Tooltip(
+                                            "sector_med:Q",
+                                            title=f"{sector} median",
+                                            format=".2f",
+                                        ),
+                                    ],
+                                )
+                            )
+
+                        st.altair_chart(layers, use_container_width=True)
+                        legend = (
+                            f"Blue = {selected} · grey band = min–max · "
+                            "dashed grey = mean"
+                        )
+                        if not sector_series.empty:
+                            legend += f" · orange = {sector} median"
+                        st.caption(legend)
+
+                        # ---- D. Summary stats ----
+                        s1, s2, s3, s4, s5 = st.columns(5)
+                        s1.metric("Current", f"{stats['current']:.1f}")
+                        s2.metric("Mean", f"{stats['mean']:.1f}")
+                        s3.metric("Min", f"{stats['min']:.1f}")
+                        s4.metric("Max", f"{stats['max']:.1f}")
+                        s5.metric("Percentile", f"{stats['percentile']:.0f}th")
+                        st.caption(
+                            f"Current {label} sits at the "
+                            f"{stats['percentile']:.0f}th percentile of its "
+                            f"{stats['count']}-quarter history "
+                            "(0th = cheapest, 100th = most expensive)."
+                        )
+        except Exception as e:
+            st.error(f"Error loading valuation data: {e}")
+
+with tab5:
     st.header("IBKR Portfolio")
 
     ib_host, ib_port, _ = get_ib_settings()
@@ -736,11 +978,9 @@ with tab4:
                     "enabled (Configure > Settings > API > Settings)."
                 )
 
-with tab5:
+with tab6:
     st.subheader("Admin Settings")
-    st.caption(
-        "These settings are stored in the database and persist across restarts."
-    )
+    st.caption("These settings are stored in the database and persist across restarts.")
 
     try:
         conn = get_db_connection()
