@@ -18,6 +18,10 @@ from tradingtools_stock.core.fetcher import (
     psycopg2,
     upsert_stock_data,
 )
+from tradingtools_stock.core.fundamentals import (
+    get_fundamentals_provider,
+    upsert_valuation_history,
+)
 
 app = typer.Typer(help="Fetch and save stock data.")
 console = Console()
@@ -344,3 +348,144 @@ def catch_up(
         workers=workers,
         is_catch_up=True,
     )
+
+
+def _run_valuation_logic(
+    tickers: list[str] | None,
+    debug: bool,
+    workers: int,
+):
+    log_level = logging.DEBUG if debug else logging.INFO
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    logging.basicConfig(
+        level=log_level, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+
+    provider = get_fundamentals_provider()
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        console.print("[green]Connected to database.[/]")
+        create_tables_if_not_exist(conn)
+
+        tickers_with_markets = get_active_tickers_with_markets(conn, tickers)
+        if not tickers_with_markets:
+            console.print(
+                "[red]No active tickers found in the database. "
+                "Provide via --tickers.[/]"
+            )
+            raise typer.Exit(1)
+
+        console.print(
+            f"Fetching valuation history for {len(tickers_with_markets)} tickers."
+        )
+
+        total_rows = 0
+        updated_tickers: list[str] = []
+        skipped_tickers: list[str] = []
+        failed_tickers: list[dict] = []
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                "[cyan]Fetching valuation history...",
+                total=len(tickers_with_markets),
+            )
+
+            def fetch_one(info: dict):
+                records = provider.get_fundamentals(info["symbol"], info["market"])
+                return info["symbol"], records
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_ticker = {
+                    executor.submit(fetch_one, info): info["symbol"]
+                    for info in tickers_with_markets
+                }
+
+                for future in concurrent.futures.as_completed(future_to_ticker):
+                    ticker = future_to_ticker[future]
+                    try:
+                        _, records = future.result()
+                        if records:
+                            written = upsert_valuation_history(conn, records)
+                            total_rows += written
+                            updated_tickers.append(ticker)
+                            progress.console.print(
+                                f"[green]✓ {ticker}: {written} quarters[/]"
+                            )
+                        else:
+                            # No valuation data from Yahoo -> coverage gap, not
+                            # an error. Logged and skipped so the run finishes.
+                            skipped_tickers.append(ticker)
+                            progress.console.print(
+                                f"[yellow]⚠ {ticker}: no valuation data returned[/]"
+                            )
+                    except Exception as exc:
+                        failed_tickers.append({"Ticker": ticker, "Error": str(exc)})
+                        progress.console.print(f"[red]✗ {ticker}: {exc}[/]")
+                    finally:
+                        progress.advance(task)
+
+        console.print("\n[bold]Summary[/bold]")
+        console.print(f"Quarters upserted: {total_rows}")
+        console.print(f"Tickers updated: {len(updated_tickers)}")
+        if skipped_tickers:
+            console.print(
+                f"[yellow]No valuation data (coverage gap): {len(skipped_tickers)}[/]"
+            )
+
+        if failed_tickers:
+            console.print(
+                f"\n[bold red]Failed tickers ({len(failed_tickers)})[/bold red]"
+            )
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Ticker")
+            table.add_column("Error")
+            for item in failed_tickers:
+                table.add_row(item["Ticker"], item["Error"])
+            console.print(table)
+
+    except psycopg2.Error as e:
+        console.print(f"[red]Database error: {e}[/]")
+        raise typer.Exit(1) from e
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.command()
+def valuation(
+    tickers: list[str] | None = typer.Option(
+        None,
+        "--tickers",
+        "-t",
+        help="Specific tickers to update (e.g. -t AAPL -t GOOGL). "
+        "If omitted, active DB tickers are used.",
+    ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="Enable debug logging.",
+    ),
+    workers: int = typer.Option(
+        5,
+        "--workers",
+        "-w",
+        help="Number of concurrent workers for fetching valuation data.",
+    ),
+):
+    """
+    Fetch quarterly valuation history (P/E, P/B, P/S, EV/EBITDA, ...) into the DB.
+
+    Pulls each active ticker's valuation multiples from Yahoo Finance (~5 years,
+    no API key required) and upserts them into the valuation_history table for
+    the Valuation dashboard tab.
+    """
+    _run_valuation_logic(tickers=tickers, debug=debug, workers=workers)

@@ -183,12 +183,41 @@ def create_tables_if_not_exist(conn):
             """
         )
 
+        # Create valuation_history table (quarterly valuation multiples sourced
+        # from Yahoo Finance; populated by `fetch valuation`, consumed by the
+        # Valuation dashboard tab).
+        logging.debug("Ensuring 'valuation_history' table exists")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS valuation_history (
+                symbol VARCHAR(10) NOT NULL,
+                as_of_date DATE NOT NULL,
+                period_type VARCHAR(10) NOT NULL DEFAULT '',
+                trailing_pe DECIMAL(18, 6),
+                forward_pe DECIMAL(18, 6),
+                pb DECIMAL(18, 6),
+                ps DECIMAL(18, 6),
+                peg DECIMAL(18, 6),
+                ev_ebitda DECIMAL(18, 6),
+                ev_revenue DECIMAL(18, 6),
+                market_cap DECIMAL(24, 2),
+                enterprise_value DECIMAL(24, 2),
+                dividend_yield DECIMAL(10, 6),
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (symbol, as_of_date, period_type),
+                FOREIGN KEY (symbol) REFERENCES tickers(symbol)
+            );
+            """
+        )
+
         # Create indexes
         logging.debug("Ensuring indexes exist")
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_stock_prices_symbol ON stock_prices(symbol);
             CREATE INDEX IF NOT EXISTS idx_stock_prices_date ON stock_prices(date);
+            CREATE INDEX IF NOT EXISTS idx_valuation_symbol
+                ON valuation_history(symbol);
             """
         )
 
@@ -625,22 +654,24 @@ def update_tickers_metadata(conn, workers=5, progress_callback=None):
                 data = profile[query_ticker]
                 sector = data.get("sector", "Unknown")
                 industry = data.get("industry", "Unknown")
-                
+
             return symbol, sector, industry, None
         except Exception as e:
             return symbol, sector, industry, e
 
     updated_count = 0
     total_tickers = len(rows)
-    
+
     # We fetch concurrently, but update the database synchronously to avoid DB connection issues.
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         # Submit all tasks
-        future_to_symbol = {executor.submit(fetch_metadata, row): row[0] for row in rows}
-        
+        future_to_symbol = {
+            executor.submit(fetch_metadata, row): row[0] for row in rows
+        }
+
         for future in concurrent.futures.as_completed(future_to_symbol):
             symbol, sector, industry, error = future.result()
-            
+
             if error:
                 logging.warning(f"Failed to fetch metadata for {symbol}: {error}")
             else:
@@ -652,12 +683,16 @@ def update_tickers_metadata(conn, workers=5, progress_callback=None):
                         )
                         conn.commit()
                     updated_count += 1
-                    logging.info(f"Updated metadata for {symbol}: Sector={sector}, Industry={industry}")
+                    logging.info(
+                        f"Updated metadata for {symbol}: Sector={sector}, Industry={industry}"
+                    )
                 except Exception as e:
                     logging.warning(f"Database error while updating {symbol}: {e}")
-            
+
             # Fire progress callback if provided
             if progress_callback:
                 progress_callback(symbol, sector, industry, error)
 
-    logging.info(f"Metadata update complete. Updated {updated_count}/{total_tickers} tickers.")
+    logging.info(
+        f"Metadata update complete. Updated {updated_count}/{total_tickers} tickers."
+    )
