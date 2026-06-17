@@ -105,15 +105,28 @@ def trades(
         return
 
     table = Table(title="Recorded CLI Trades")
-    for col in ["Placed At", "Symbol", "Action", "Quantity", "Price", "Source"]:
+    for col in [
+        "Placed At",
+        "Symbol",
+        "Action",
+        "Method",
+        "Quantity",
+        "Cash",
+        "Price",
+        "Source",
+    ]:
         table.add_column(col)
     for _, row in df.iterrows():
         price = row["Price"]
+        qty = row["Quantity"]
+        cash = row["Cash"]
         table.add_row(
             str(row["Placed At"]),
             str(row["Symbol"]),
             str(row["Action"]),
-            f"{row['Quantity']:g}",
+            str(row["Method"] or "-"),
+            f"{qty:g}" if qty is not None else "-",
+            f"{float(cash):.2f}" if cash is not None else "-",
             f"{float(price):.2f}" if price is not None else "-",
             str(row["Source"]),
         )

@@ -208,19 +208,23 @@ def _make_stock_contract(symbol: str, market: str | None):
 
 def place_market_buys(orders: list[dict], timeout: float = 30.0) -> list[dict]:
     """
-    Place whole-share market BUY orders on the connected account.
+    Place market BUY orders on the connected account.
 
-    ``orders`` is a list of ``{"symbol", "market", "quantity"}`` dicts. Each
-    order's ``orderRef`` is tagged with :data:`trades.ORDER_REF` so it reads
-    back as a CLI trade. Connects read-write (``readonly=False``) — IB Gateway's
-    "Read-Only API" setting must be disabled.
+    ``orders`` is a list of dicts. Each order is sized one of two ways:
+    - whole shares: ``{"symbol", "market", "method": "Shares", "quantity"}``
+    - cash quantity: ``{"symbol", "market", "method": "Cash", "cash"}`` — a
+      monetary order (needs fractional-share permission on the account).
 
-    Returns one result dict per input order with keys: symbol, quantity,
-    currency, status, order_id, perm_id, error.
+    Each order's ``orderRef`` is tagged with :data:`trades.ORDER_REF` so it
+    reads back as a CLI trade. Connects read-write (``readonly=False``) — IB
+    Gateway's "Read-Only API" setting must be disabled.
+
+    Returns one result dict per input order with keys: symbol, method, quantity,
+    cash, currency, status, order_id, perm_id, error.
     """
     from ib_async import IB, MarketOrder
 
-    from tradingtools_stock.core.trades import ORDER_REF
+    from tradingtools_stock.core.trades import METHOD_CASH, ORDER_REF
 
     _ensure_event_loop()
     host, port, client_id = get_ib_settings()
@@ -232,17 +236,26 @@ def place_market_buys(orders: list[dict], timeout: float = 30.0) -> list[dict]:
         for spec in orders:
             symbol = spec["symbol"]
             market = spec.get("market")
-            qty = int(spec["quantity"])
+            method = spec.get("method", "Shares")
+            is_cash = method == METHOD_CASH
+            qty = 0 if is_cash else int(spec.get("quantity") or 0)
+            cash = float(spec.get("cash") or 0) if is_cash else None
             result = {
                 "symbol": symbol,
+                "method": method,
                 "quantity": qty,
+                "cash": cash,
                 "currency": None,
                 "status": None,
                 "order_id": None,
                 "perm_id": None,
                 "error": None,
             }
-            if qty <= 0:
+            if is_cash and cash <= 0:
+                result["error"] = "cash amount must be positive"
+                results.append(result)
+                continue
+            if not is_cash and qty <= 0:
                 result["error"] = "quantity must be positive"
                 results.append(result)
                 continue
@@ -256,7 +269,12 @@ def place_market_buys(orders: list[dict], timeout: float = 30.0) -> list[dict]:
                 contract = qualified[0]
                 result["currency"] = contract.currency
 
-                order = MarketOrder("BUY", qty)
+                if is_cash:
+                    # Monetary order: totalQuantity 0, broker derives shares.
+                    order = MarketOrder("BUY", 0)
+                    order.cashQty = cash
+                else:
+                    order = MarketOrder("BUY", qty)
                 order.orderRef = ORDER_REF
                 trade = ib.placeOrder(contract, order)
                 # Give the order a moment to be acknowledged so we can report a

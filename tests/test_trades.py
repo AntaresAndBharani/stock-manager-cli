@@ -39,29 +39,35 @@ def test_build_buy_plan_union_and_source():
     assert plan.loc["AAA", "Source"] == "current"
     assert plan.loc["BBB", "Source"] == "both"
     assert plan.loc["CCC", "Source"] == "as-of"
-    # Quantity sizing (whole shares).
-    assert plan.loc["AAA", "Quantity"] == 15
-    assert plan.loc["BBB", "Quantity"] == 0  # 200 > 150
-    assert plan.loc["CCC", "Quantity"] == 3
+    # Whole-share sizing.
+    assert plan.loc["AAA", "Shares"] == 15
+    assert plan.loc["BBB", "Shares"] == 0  # 200 > 150
+    assert plan.loc["CCC", "Shares"] == 3
+    # Cash option == budget for every row.
+    assert plan.loc["AAA", "Cash"] == pytest.approx(150.0)
+    assert plan.loc["BBB", "Cash"] == pytest.approx(150.0)
+    # Default method: Cash when no whole share is affordable, else Shares.
+    assert plan.loc["AAA", "Method"] == trades.METHOD_SHARES
+    assert plan.loc["BBB", "Method"] == trades.METHOD_CASH
     # Markets carried through for contract resolution.
     assert plan.loc["AAA", "Market"] == "BME"
     assert plan.loc["CCC", "Market"] == "LSE"
-    # Estimated cost.
+    # Estimated cost of the shares method.
     assert plan.loc["AAA", "Est. Cost"] == pytest.approx(150.0)
+
+
+def test_build_buy_plan_excludes_symbols():
+    current = pd.DataFrame({"Ticker": ["AAA", "BBB"], "Price": [10.0, 20.0]})
+    plan = trades.build_buy_plan(
+        current, None, budget=150.0, exclude_symbols={"AAA"}
+    )
+    assert list(plan["Symbol"]) == ["BBB"]
 
 
 def test_build_buy_plan_empty():
     plan = trades.build_buy_plan(pd.DataFrame(), None)
     assert plan.empty
-    assert list(plan.columns) == [
-        "Symbol",
-        "Market",
-        "Signal",
-        "Source",
-        "Price",
-        "Quantity",
-        "Est. Cost",
-    ]
+    assert list(plan.columns) == trades.PLAN_COLUMNS
 
 
 def test_build_buy_plan_accepts_symbol_column():

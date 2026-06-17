@@ -43,11 +43,28 @@ def compute_buy_quantity(price: float | None, budget: float = DEFAULT_BUDGET) ->
     return int(math.floor(budget / float(price)))
 
 
+# Per-stock order method the user picks in the buy table.
+METHOD_SHARES = "Shares"
+METHOD_CASH = "Cash"
+PLAN_COLUMNS = [
+    "Symbol",
+    "Market",
+    "Signal",
+    "Source",
+    "Price",
+    "Shares",
+    "Est. Cost",
+    "Cash",
+    "Method",
+]
+
+
 def build_buy_plan(
     current_entries: pd.DataFrame,
     asof_entries: pd.DataFrame | None,
     markets: dict[str, str | None] | None = None,
     budget: float = DEFAULT_BUDGET,
+    exclude_symbols: set[str] | None = None,
 ) -> pd.DataFrame:
     """
     Build a buy plan from the dashboard entry tables.
@@ -58,9 +75,14 @@ def build_buy_plan(
     where the entry came from (``current`` / ``as-of`` / ``both``).
 
     ``markets`` optionally maps symbol -> market code so the resulting contract
-    can be resolved by IBKR.
+    can be resolved by IBKR. ``exclude_symbols`` is dropped from the plan (used
+    to hide stocks already bought this month).
 
-    Columns: Symbol, Market, Signal, Source, Price, Quantity, Est. Cost.
+    Each row offers two ways to spend the budget — ``Shares`` (whole shares,
+    ``floor(budget / price)``) or ``Cash`` (a monetary cash-quantity order for
+    the budget) — and a default ``Method`` the user can change per row.
+
+    Columns: see :data:`PLAN_COLUMNS`.
     """
 
     def _symbols(df: pd.DataFrame | None) -> dict[str, dict]:
@@ -82,8 +104,11 @@ def build_buy_plan(
     aso = _symbols(asof_entries)
 
     markets = markets or {}
+    exclude_symbols = exclude_symbols or set()
     rows = []
     for sym in sorted(set(cur) | set(aso)):
+        if sym in exclude_symbols:
+            continue
         if sym in cur and sym in aso:
             source = "both"
         elif sym in cur:
@@ -94,7 +119,7 @@ def build_buy_plan(
         info = cur.get(sym) or aso.get(sym)
         price = info.get("Price")
         price = float(price) if price is not None and pd.notna(price) else None
-        qty = compute_buy_quantity(price, budget)
+        shares = compute_buy_quantity(price, budget)
         rows.append(
             {
                 "Symbol": sym,
@@ -102,23 +127,33 @@ def build_buy_plan(
                 "Signal": info.get("Signal"),
                 "Source": source,
                 "Price": price,
-                "Quantity": qty,
-                "Est. Cost": (qty * price) if price is not None else None,
+                "Shares": shares,
+                "Est. Cost": (shares * price) if price is not None else None,
+                "Cash": budget,
+                # Default to a cash order when a whole share is unaffordable,
+                # otherwise whole shares.
+                "Method": METHOD_CASH if shares <= 0 else METHOD_SHARES,
             }
         )
 
-    return pd.DataFrame(
-        rows,
-        columns=[
-            "Symbol",
-            "Market",
-            "Signal",
-            "Source",
-            "Price",
-            "Quantity",
-            "Est. Cost",
-        ],
-    )
+    return pd.DataFrame(rows, columns=PLAN_COLUMNS)
+
+
+def symbols_bought_this_month(conn, today=None) -> set[str]:
+    """
+    Symbols with a recorded trade in the current calendar month.
+
+    Used to hide stocks already bought this month from the buy table.
+    """
+    ensure_trades_table(conn)
+    today = today or pd.Timestamp.today()
+    month_start = pd.Timestamp(today).normalize().replace(day=1).date()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT symbol FROM trades WHERE placed_at::date >= %s",
+            (month_start,),
+        )
+        return {row[0] for row in cur.fetchall()}
 
 
 def ensure_trades_table(conn) -> None:
@@ -130,7 +165,9 @@ def ensure_trades_table(conn) -> None:
                 id SERIAL PRIMARY KEY,
                 symbol VARCHAR(10) NOT NULL,
                 action VARCHAR(4) NOT NULL,
-                quantity DECIMAL(18, 6) NOT NULL,
+                quantity DECIMAL(18, 6),
+                cash_amount DECIMAL(18, 6),
+                method VARCHAR(10),
                 price DECIMAL(18, 6),
                 currency VARCHAR(10),
                 order_ref VARCHAR(50),
@@ -141,6 +178,15 @@ def ensure_trades_table(conn) -> None:
                 placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (symbol) REFERENCES tickers(symbol)
             );
+            """
+        )
+        # Migrate tables that predate cash-quantity orders: add the new columns
+        # and relax quantity (NULL for cash orders, where shares aren't known).
+        cur.execute(
+            """
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS cash_amount DECIMAL(18, 6);
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS method VARCHAR(10);
+            ALTER TABLE trades ALTER COLUMN quantity DROP NOT NULL;
             """
         )
         cur.execute(
@@ -154,8 +200,10 @@ def record_trade(
     conn,
     symbol: str,
     action: str,
-    quantity: float,
+    quantity: float | None = None,
     *,
+    cash_amount: float | None = None,
+    method: str | None = None,
     price: float | None = None,
     currency: str | None = None,
     ib_order_id: int | None = None,
@@ -164,20 +212,26 @@ def record_trade(
     source: str = SOURCE_CLI,
 ) -> None:
     """Persist a single CLI-placed trade so it survives IBKR's short execution
-    retention window and remains tagged as ``CLI`` indefinitely."""
+    retention window and remains tagged as ``CLI`` indefinitely.
+
+    ``quantity`` is the whole-share count (Shares method); ``cash_amount`` is the
+    monetary order size (Cash method). Exactly one is typically set.
+    """
     ensure_trades_table(conn)
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO trades
-                (symbol, action, quantity, price, currency, order_ref,
-                 ib_order_id, ib_perm_id, status, source)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (symbol, action, quantity, cash_amount, method, price, currency,
+                 order_ref, ib_order_id, ib_perm_id, status, source)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 symbol,
                 action,
                 quantity,
+                cash_amount,
+                method,
                 price,
                 currency,
                 ORDER_REF,
@@ -210,7 +264,9 @@ def fetch_trades(conn, start=None, end=None) -> pd.DataFrame:
             placed_at AS "Placed At",
             symbol AS "Symbol",
             action AS "Action",
+            method AS "Method",
             quantity AS "Quantity",
+            cash_amount AS "Cash",
             price AS "Price",
             currency AS "Currency",
             status AS "Status",

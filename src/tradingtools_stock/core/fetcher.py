@@ -220,7 +220,9 @@ def create_tables_if_not_exist(conn):
                 id SERIAL PRIMARY KEY,
                 symbol VARCHAR(10) NOT NULL,
                 action VARCHAR(4) NOT NULL,
-                quantity DECIMAL(18, 6) NOT NULL,
+                quantity DECIMAL(18, 6),
+                cash_amount DECIMAL(18, 6),
+                method VARCHAR(10),
                 price DECIMAL(18, 6),
                 currency VARCHAR(10),
                 order_ref VARCHAR(50),
@@ -231,6 +233,14 @@ def create_tables_if_not_exist(conn):
                 placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (symbol) REFERENCES tickers(symbol)
             );
+            """
+        )
+        # Migrate trades tables created before cash-quantity order support.
+        cur.execute(
+            """
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS cash_amount DECIMAL(18, 6);
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS method VARCHAR(10);
+            ALTER TABLE trades ALTER COLUMN quantity DROP NOT NULL;
             """
         )
 

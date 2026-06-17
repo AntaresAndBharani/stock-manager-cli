@@ -114,7 +114,9 @@ def place_buys_and_record(orders):
                 conn,
                 res["symbol"],
                 "BUY",
-                res["quantity"],
+                res.get("quantity") or None,
+                cash_amount=res.get("cash"),
+                method=res.get("method"),
                 price=spec.get("price"),
                 currency=res.get("currency"),
                 ib_order_id=res.get("order_id"),
@@ -124,6 +126,16 @@ def place_buys_and_record(orders):
     finally:
         conn.close()
     return results
+
+
+@st.cache_data(ttl=60)
+def load_bought_this_month():
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return trades.symbols_bought_this_month(conn)
+    finally:
+        conn.close()
 
 
 @st.cache_data(ttl=3600)
@@ -321,14 +333,16 @@ with tab1:  # noqa: SIM117
                         else:
                             st.info("No active entries as of that date.")
 
-                # ---- Average buy (€150 per stock) ----
+                # ---- Average buy ----
                 st.divider()
                 st.subheader("💶 Average buy")
                 st.caption(
-                    "Buy a fixed amount of each entry — both current entries "
-                    "and those from the 'as of' date above. Whole shares only "
-                    "(qty = floor(budget / price), in the stock's own "
-                    "currency). Review and uncheck before placing."
+                    "Buy a fixed budget of each entry — both current entries "
+                    "and those from the 'as of' date above. Each row shows the "
+                    "**whole shares** the budget buys (floor(budget / price)) "
+                    "and the **cash** amount; pick the **Method** per row. "
+                    "Stocks already bought this month are hidden. "
+                    "Cash orders need fractional-share permission on the account."
                 )
 
                 budget = st.number_input(
@@ -339,134 +353,148 @@ with tab1:  # noqa: SIM117
                     key="buy_budget",
                 )
                 markets = load_active_markets()
+                bought = load_bought_this_month()
                 plan = trades.build_buy_plan(
-                    df_entries, df_asof_entries, markets, budget=budget
+                    df_entries,
+                    df_asof_entries,
+                    markets,
+                    budget=budget,
+                    exclude_symbols=bought,
                 )
+
+                if bought:
+                    st.caption(
+                        "Hidden (already bought this month): "
+                        + ", ".join(sorted(bought))
+                    )
 
                 if plan.empty:
                     st.info("No entries available to buy.")
                 else:
-                    skipped = plan[plan["Quantity"] <= 0]
-                    plan_buyable = plan[plan["Quantity"] > 0].reset_index(drop=True)
-
-                    if not plan_buyable.empty:
-                        editor_df = plan_buyable.copy()
-                        editor_df.insert(0, "Buy", True)
-                        edited = st.data_editor(
-                            editor_df,
-                            hide_index=True,
-                            width="stretch",
-                            disabled=[
-                                c for c in editor_df.columns if c != "Buy"
-                            ],
-                            column_config={
-                                "Buy": st.column_config.CheckboxColumn(
-                                    "Buy", default=True
+                    editor_df = plan.copy()
+                    editor_df.insert(0, "Buy", True)
+                    edited = st.data_editor(
+                        editor_df,
+                        hide_index=True,
+                        width="stretch",
+                        disabled=[
+                            c for c in editor_df.columns
+                            if c not in ("Buy", "Method")
+                        ],
+                        column_config={
+                            "Buy": st.column_config.CheckboxColumn(
+                                "Buy", default=True
+                            ),
+                            "Method": st.column_config.SelectboxColumn(
+                                "Method",
+                                options=[trades.METHOD_SHARES, trades.METHOD_CASH],
+                                required=True,
+                                help=(
+                                    "Shares = whole shares for the budget. "
+                                    "Cash = spend the budget exactly "
+                                    "(fractional shares)."
                                 ),
-                                "Price": st.column_config.NumberColumn(
-                                    format="%.2f"
-                                ),
-                                "Est. Cost": st.column_config.NumberColumn(
-                                    format="%.2f"
-                                ),
-                            },
-                            key="buy_plan_editor",
-                        )
-                        selected = edited[edited["Buy"]]
-                        total_cost = selected["Est. Cost"].fillna(0).sum()
-                        st.caption(
-                            f"Selected: **{len(selected)}** stocks · "
-                            f"≈ **{total_cost:,.2f}** total (each in its own "
-                            "currency)."
-                        )
+                            ),
+                            "Price": st.column_config.NumberColumn(format="%.2f"),
+                            "Shares": st.column_config.NumberColumn(format="%d"),
+                            "Est. Cost": st.column_config.NumberColumn(
+                                "Shares Cost", format="%.2f"
+                            ),
+                            "Cash": st.column_config.NumberColumn(format="%.2f"),
+                        },
+                        key="buy_plan_editor",
+                    )
+                    selected = edited[edited["Buy"]]
 
-                        ib_host, ib_port, _ = get_ib_settings()
-                        reachable = is_api_port_open(ib_host, ib_port)
-                        live_hint = " (live trading port)" if ib_port == 4001 else ""
-                        if not reachable:
-                            st.warning(
-                                f"IB Gateway / TWS is not reachable on "
-                                f"{ib_host}:{ib_port}. Start it and log in, "
-                                "then reload."
-                            )
-                        else:
-                            st.caption(
-                                f"Orders route to the account on "
-                                f"{ib_host}:{ib_port}{live_hint}. IB Gateway's "
-                                "'Read-Only API' must be disabled."
-                            )
+                    is_cash = selected["Method"] == trades.METHOD_CASH
+                    shares_cost = (
+                        selected.loc[~is_cash, "Est. Cost"].fillna(0).sum()
+                    )
+                    cash_cost = selected.loc[is_cash, "Cash"].fillna(0).sum()
+                    st.caption(
+                        f"Selected: **{len(selected)}** stocks "
+                        f"({int((~is_cash).sum())} shares · {int(is_cash.sum())} "
+                        f"cash) · ≈ **{shares_cost + cash_cost:,.2f}** total "
+                        "(each in its own currency)."
+                    )
 
-                        confirm = st.checkbox(
-                            "I have reviewed the orders above and want to place "
-                            "them as market BUY orders.",
-                            key="buy_confirm",
+                    ib_host, ib_port, _ = get_ib_settings()
+                    reachable = is_api_port_open(ib_host, ib_port)
+                    live_hint = " (live trading port)" if ib_port == 4001 else ""
+                    if not reachable:
+                        st.warning(
+                            f"IB Gateway / TWS is not reachable on "
+                            f"{ib_host}:{ib_port}. Start it and log in, "
+                            "then reload."
                         )
-                        if st.button(
-                            "Place market buy orders",
-                            type="primary",
-                            disabled=not (reachable and confirm and not selected.empty),
-                            key="buy_place",
-                        ):
-                            orders = [
-                                {
-                                    "symbol": r["Symbol"],
-                                    "market": r["Market"],
-                                    "quantity": int(r["Quantity"]),
-                                    "price": (
-                                        float(r["Price"])
-                                        if pd.notna(r["Price"])
-                                        else None
-                                    ),
-                                }
-                                for _, r in selected.iterrows()
-                            ]
-                            with st.spinner("Placing orders via IBKR..."):
-                                try:
-                                    results = place_buys_and_record(orders)
-                                    res_df = pd.DataFrame(results)
-                                    ok = res_df[res_df["error"].isna()]
-                                    failed = res_df[res_df["error"].notna()]
-                                    if not ok.empty:
-                                        st.success(
-                                            f"Placed {len(ok)} order(s)."
-                                        )
-                                        st.dataframe(
-                                            ok[
-                                                [
-                                                    "symbol",
-                                                    "quantity",
-                                                    "currency",
-                                                    "status",
-                                                    "order_id",
-                                                ]
-                                            ],
-                                            hide_index=True,
-                                            width="stretch",
-                                        )
-                                    if not failed.empty:
-                                        st.error(
-                                            f"{len(failed)} order(s) failed:"
-                                        )
-                                        st.dataframe(
-                                            failed[["symbol", "error"]],
-                                            hide_index=True,
-                                            width="stretch",
-                                        )
-                                    load_trades.clear()
-                                    load_portfolio.clear()
-                                except Exception as e:
-                                    st.error(f"Order placement failed: {e}")
                     else:
-                        st.info(
-                            "No entries can be bought at this budget "
-                            "(every share costs more than the budget)."
+                        st.caption(
+                            f"Orders route to the account on "
+                            f"{ib_host}:{ib_port}{live_hint}. IB Gateway's "
+                            "'Read-Only API' must be disabled."
                         )
 
-                    if not skipped.empty:
-                        st.caption(
-                            "Skipped (share price exceeds the budget): "
-                            + ", ".join(sorted(skipped["Symbol"]))
-                        )
+                    confirm = st.checkbox(
+                        "I have reviewed the orders above and want to place "
+                        "them as market BUY orders.",
+                        key="buy_confirm",
+                    )
+                    if st.button(
+                        "Place market buy orders",
+                        type="primary",
+                        disabled=not (reachable and confirm and not selected.empty),
+                        key="buy_place",
+                    ):
+                        orders = [
+                            {
+                                "symbol": r["Symbol"],
+                                "market": r["Market"],
+                                "method": r["Method"],
+                                "quantity": int(r["Shares"]),
+                                "cash": float(r["Cash"]),
+                                "price": (
+                                    float(r["Price"])
+                                    if pd.notna(r["Price"])
+                                    else None
+                                ),
+                            }
+                            for _, r in selected.iterrows()
+                        ]
+                        with st.spinner("Placing orders via IBKR..."):
+                            try:
+                                results = place_buys_and_record(orders)
+                                res_df = pd.DataFrame(results)
+                                ok = res_df[res_df["error"].isna()]
+                                failed = res_df[res_df["error"].notna()]
+                                if not ok.empty:
+                                    st.success(f"Placed {len(ok)} order(s).")
+                                    st.dataframe(
+                                        ok[
+                                            [
+                                                "symbol",
+                                                "method",
+                                                "quantity",
+                                                "cash",
+                                                "currency",
+                                                "status",
+                                                "order_id",
+                                            ]
+                                        ],
+                                        hide_index=True,
+                                        width="stretch",
+                                    )
+                                if not failed.empty:
+                                    st.error(f"{len(failed)} order(s) failed:")
+                                    st.dataframe(
+                                        failed[["symbol", "error"]],
+                                        hide_index=True,
+                                        width="stretch",
+                                    )
+                                load_trades.clear()
+                                load_portfolio.clear()
+                                load_bought_this_month.clear()
+                            except Exception as e:
+                                st.error(f"Order placement failed: {e}")
 
                 st.subheader(
                     f"No Entries (1000 SMA Strategy) ({len(df_no_entries_1k)})"
@@ -1310,21 +1338,22 @@ with tab5:
                         key="trades_include_live",
                     )
 
+                cols = [
+                    "Time",
+                    "Symbol",
+                    "Action",
+                    "Method",
+                    "Quantity",
+                    "Cash",
+                    "Price",
+                    "Currency",
+                    "Source",
+                ]
                 parts = []
                 rec = load_trades(t_from, t_to)
                 if not rec.empty:
                     parts.append(
-                        rec.rename(columns={"Placed At": "Time"})[
-                            [
-                                "Time",
-                                "Symbol",
-                                "Action",
-                                "Quantity",
-                                "Price",
-                                "Currency",
-                                "Source",
-                            ]
-                        ]
+                        rec.rename(columns={"Placed At": "Time"}).reindex(columns=cols)
                     )
                 if include_live:
                     try:
@@ -1337,17 +1366,7 @@ with tab5:
                             # CLI history comes from our own records; take only
                             # the Manual executions from IBKR to avoid dupes.
                             parts.append(
-                                ex[ex["Source"] == "Manual"][
-                                    [
-                                        "Time",
-                                        "Symbol",
-                                        "Action",
-                                        "Quantity",
-                                        "Price",
-                                        "Currency",
-                                        "Source",
-                                    ]
-                                ]
+                                ex[ex["Source"] == "Manual"].reindex(columns=cols)
                             )
                     except Exception as ex_err:  # noqa: BLE001
                         st.warning(f"Could not fetch live executions: {ex_err}")
