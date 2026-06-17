@@ -21,12 +21,28 @@ def test_compute_buy_quantity(price, budget, expected):
     assert trades.compute_buy_quantity(price, budget) == expected
 
 
+@pytest.mark.parametrize(
+    "price,budget,expected",
+    [
+        (10.0, 150.0, 15.0),  # affordable -> whole shares
+        (149.0, 150.0, 1.0),
+        (50.0, 150.0, 3.0),
+        (500.0, 150.0, 0.3),  # too expensive -> partial share
+        (151.0, 150.0, round(150.0 / 151.0, 4)),
+        (0.0, 150.0, 0.0),
+        (None, 150.0, 0.0),
+    ],
+)
+def test_default_share_quantity(price, budget, expected):
+    assert trades.default_share_quantity(price, budget) == pytest.approx(expected)
+
+
 def test_build_buy_plan_union_and_source():
     current = pd.DataFrame(
-        {"Ticker": ["AAA", "BBB"], "Price": [10.0, 200.0], "Signal": ["🟢", "🟢"]}
+        {"Ticker": ["AAA", "BBB"], "Price": [10.0, 500.0], "Signal": ["🟢", "🟢"]}
     )
     asof = pd.DataFrame(
-        {"Ticker": ["BBB", "CCC"], "Price": [200.0, 50.0], "Signal": ["🟡", "🟡"]}
+        {"Ticker": ["BBB", "CCC"], "Price": [500.0, 50.0], "Signal": ["🟡", "🟡"]}
     )
     markets = {"AAA": "BME", "BBB": None, "CCC": "LSE"}
 
@@ -39,21 +55,16 @@ def test_build_buy_plan_union_and_source():
     assert plan.loc["AAA", "Source"] == "current"
     assert plan.loc["BBB", "Source"] == "both"
     assert plan.loc["CCC", "Source"] == "as-of"
-    # Whole-share sizing.
-    assert plan.loc["AAA", "Shares"] == 15
-    assert plan.loc["BBB", "Shares"] == 0  # 200 > 150
-    assert plan.loc["CCC", "Shares"] == 3
-    # Cash option == budget for every row.
-    assert plan.loc["AAA", "Cash"] == pytest.approx(150.0)
-    assert plan.loc["BBB", "Cash"] == pytest.approx(150.0)
-    # Default method: Cash when no whole share is affordable, else Shares.
-    assert plan.loc["AAA", "Method"] == trades.METHOD_SHARES
-    assert plan.loc["BBB", "Method"] == trades.METHOD_CASH
+    # Default editable share quantity: whole when affordable, partial otherwise.
+    assert plan.loc["AAA", "Shares"] == pytest.approx(15.0)
+    assert plan.loc["BBB", "Shares"] == pytest.approx(0.3)  # 500 > 150 -> partial
+    assert plan.loc["CCC", "Shares"] == pytest.approx(3.0)
     # Markets carried through for contract resolution.
     assert plan.loc["AAA", "Market"] == "BME"
     assert plan.loc["CCC", "Market"] == "LSE"
-    # Estimated cost of the shares method.
+    # Estimated cost at the default quantity.
     assert plan.loc["AAA", "Est. Cost"] == pytest.approx(150.0)
+    assert plan.loc["BBB", "Est. Cost"] == pytest.approx(150.0)
 
 
 def test_build_buy_plan_excludes_symbols():

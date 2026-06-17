@@ -43,9 +43,6 @@ def compute_buy_quantity(price: float | None, budget: float = DEFAULT_BUDGET) ->
     return int(math.floor(budget / float(price)))
 
 
-# Per-stock order method the user picks in the buy table.
-METHOD_SHARES = "Shares"
-METHOD_CASH = "Cash"
 PLAN_COLUMNS = [
     "Symbol",
     "Market",
@@ -54,9 +51,27 @@ PLAN_COLUMNS = [
     "Price",
     "Shares",
     "Est. Cost",
-    "Cash",
-    "Method",
 ]
+
+
+def default_share_quantity(
+    price: float | None, budget: float = DEFAULT_BUDGET
+) -> float:
+    """
+    Default number of shares for spending ~``budget`` (stock currency) at
+    ``price``.
+
+    Whole shares when at least one is affordable (``floor(budget / price)``);
+    otherwise a **fractional** share (``budget / price``) so an expensive stock
+    — one share dearer than the budget — can still be bought as a partial
+    position. The user can override this per row in the buy table.
+    """
+    if price is None or not pd.notna(price) or price <= 0 or budget <= 0:
+        return 0.0
+    raw = budget / float(price)
+    if raw >= 1:
+        return float(math.floor(raw))
+    return round(raw, 4)
 
 
 def build_buy_plan(
@@ -78,9 +93,9 @@ def build_buy_plan(
     can be resolved by IBKR. ``exclude_symbols`` is dropped from the plan (used
     to hide stocks already bought this month).
 
-    Each row offers two ways to spend the budget — ``Shares`` (whole shares,
-    ``floor(budget / price)``) or ``Cash`` (a monetary cash-quantity order for
-    the budget) — and a default ``Method`` the user can change per row.
+    ``Shares`` seeds a per-row, user-editable quantity (whole when affordable,
+    fractional/partial when one share exceeds the budget); ``Est. Cost`` is
+    ``Shares * Price``.
 
     Columns: see :data:`PLAN_COLUMNS`.
     """
@@ -119,7 +134,7 @@ def build_buy_plan(
         info = cur.get(sym) or aso.get(sym)
         price = info.get("Price")
         price = float(price) if price is not None and pd.notna(price) else None
-        shares = compute_buy_quantity(price, budget)
+        shares = default_share_quantity(price, budget)
         rows.append(
             {
                 "Symbol": sym,
@@ -129,10 +144,6 @@ def build_buy_plan(
                 "Price": price,
                 "Shares": shares,
                 "Est. Cost": (shares * price) if price is not None else None,
-                "Cash": budget,
-                # Default to a cash order when a whole share is unaffordable,
-                # otherwise whole shares.
-                "Method": METHOD_CASH if shares <= 0 else METHOD_SHARES,
             }
         )
 
@@ -277,9 +288,7 @@ def fetch_trades(conn, start=None, end=None) -> pd.DataFrame:
             placed_at AS "Placed At",
             symbol AS "Symbol",
             action AS "Action",
-            method AS "Method",
             quantity AS "Quantity",
-            cash_amount AS "Cash",
             price AS "Price",
             currency AS "Currency",
             status AS "Status",

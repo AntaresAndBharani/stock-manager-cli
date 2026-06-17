@@ -115,8 +115,6 @@ def place_buys_and_record(orders):
                 res["symbol"],
                 "BUY",
                 res.get("quantity") or None,
-                cash_amount=res.get("cash"),
-                method=res.get("method"),
                 price=spec.get("price"),
                 currency=res.get("currency"),
                 ib_order_id=res.get("order_id"),
@@ -349,11 +347,13 @@ with tab1:  # noqa: SIM117
                 st.subheader("💶 Average buy")
                 st.caption(
                     "Buy a fixed budget of each entry — both current entries "
-                    "and those from the 'as of' date above. Each row shows the "
-                    "**whole shares** the budget buys (floor(budget / price)) "
-                    "and the **cash** amount; pick the **Method** per row. "
-                    "Stocks already bought this month are hidden. "
-                    "Cash orders need fractional-share permission on the account."
+                    "and those from the 'as of' date above. **Shares** is "
+                    "pre-filled from the budget (whole shares, or a partial "
+                    "share when one share costs more than the budget) and is "
+                    "**editable** — set the exact quantity per row, then tick "
+                    "which to buy. Stocks already bought this month are hidden. "
+                    "Partial shares need fractional-share permission on the "
+                    "account and an IBKR-eligible stock."
                 )
 
                 budget = st.number_input(
@@ -382,7 +382,7 @@ with tab1:  # noqa: SIM117
                 if plan.empty:
                     st.info("No entries available to buy.")
                 else:
-                    editor_df = plan.copy()
+                    editor_df = plan.drop(columns=["Est. Cost"]).copy()
                     editor_df.insert(0, "Buy", True)
                     edited = st.data_editor(
                         editor_df,
@@ -390,42 +390,32 @@ with tab1:  # noqa: SIM117
                         width="stretch",
                         disabled=[
                             c for c in editor_df.columns
-                            if c not in ("Buy", "Method")
+                            if c not in ("Buy", "Shares")
                         ],
                         column_config={
                             "Buy": st.column_config.CheckboxColumn(
                                 "Buy", default=True
                             ),
-                            "Method": st.column_config.SelectboxColumn(
-                                "Method",
-                                options=[trades.METHOD_SHARES, trades.METHOD_CASH],
-                                required=True,
+                            "Price": st.column_config.NumberColumn(format="%.2f"),
+                            "Shares": st.column_config.NumberColumn(
+                                "Shares",
+                                min_value=0.0,
+                                step=0.1,
+                                format="%.4f",
                                 help=(
-                                    "Shares = whole shares for the budget. "
-                                    "Cash = spend the budget exactly "
-                                    "(fractional shares)."
+                                    "Number of shares to buy — editable. "
+                                    "Fractions allowed for partial positions."
                                 ),
                             ),
-                            "Price": st.column_config.NumberColumn(format="%.2f"),
-                            "Shares": st.column_config.NumberColumn(format="%d"),
-                            "Est. Cost": st.column_config.NumberColumn(
-                                "Shares Cost", format="%.2f"
-                            ),
-                            "Cash": st.column_config.NumberColumn(format="%.2f"),
                         },
                         key="buy_plan_editor",
                     )
-                    selected = edited[edited["Buy"]]
-
-                    is_cash = selected["Method"] == trades.METHOD_CASH
-                    shares_cost = (
-                        selected.loc[~is_cash, "Est. Cost"].fillna(0).sum()
-                    )
-                    cash_cost = selected.loc[is_cash, "Cash"].fillna(0).sum()
+                    selected = edited[edited["Buy"] & (edited["Shares"] > 0)].copy()
+                    selected["Est. Cost"] = selected["Shares"] * selected["Price"]
+                    total_cost = selected["Est. Cost"].fillna(0).sum()
                     st.caption(
-                        f"Selected: **{len(selected)}** stocks "
-                        f"({int((~is_cash).sum())} shares · {int(is_cash.sum())} "
-                        f"cash) · ≈ **{shares_cost + cash_cost:,.2f}** total "
+                        f"Selected: **{len(selected)}** stocks · "
+                        f"≈ **{total_cost:,.2f}** total "
                         "(each in its own currency)."
                     )
 
@@ -460,9 +450,7 @@ with tab1:  # noqa: SIM117
                             {
                                 "symbol": r["Symbol"],
                                 "market": r["Market"],
-                                "method": r["Method"],
-                                "quantity": int(r["Shares"]),
-                                "cash": float(r["Cash"]),
+                                "quantity": float(r["Shares"]),
                                 "price": (
                                     float(r["Price"])
                                     if pd.notna(r["Price"])
@@ -483,9 +471,7 @@ with tab1:  # noqa: SIM117
                                         ok[
                                             [
                                                 "symbol",
-                                                "method",
                                                 "quantity",
-                                                "cash",
                                                 "currency",
                                                 "status",
                                                 "order_id",
@@ -1374,9 +1360,7 @@ with tab5:
                     "Time",
                     "Symbol",
                     "Action",
-                    "Method",
                     "Quantity",
-                    "Cash",
                     "Price",
                     "Currency",
                     "Source",
