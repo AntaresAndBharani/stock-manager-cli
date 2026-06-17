@@ -76,3 +76,45 @@ def status():
 
     positions = data["positions"]
     console.print(f"Open positions: [bold]{len(positions)}[/]")
+
+
+@app.command("trades")
+def trades(
+    start: str | None = typer.Option(
+        None, "--start", help="Earliest date (YYYY-MM-DD), inclusive."
+    ),
+    end: str | None = typer.Option(
+        None, "--end", help="Latest date (YYYY-MM-DD), inclusive."
+    ),
+):
+    """
+    List trades recorded by the CLI (the 'Average buy' action), optionally
+    filtered by date. These are persisted locally and always tagged 'CLI'.
+    """
+    from tradingtools_stock.core import trades as trades_core
+    from tradingtools_stock.core.fetcher import get_db_connection
+
+    conn = get_db_connection()
+    try:
+        df = trades_core.fetch_trades(conn, start, end)
+    finally:
+        conn.close()
+
+    if df.empty:
+        console.print("[yellow]No recorded trades for the given range.[/]")
+        return
+
+    table = Table(title="Recorded CLI Trades")
+    for col in ["Placed At", "Symbol", "Action", "Quantity", "Price", "Source"]:
+        table.add_column(col)
+    for _, row in df.iterrows():
+        price = row["Price"]
+        table.add_row(
+            str(row["Placed At"]),
+            str(row["Symbol"]),
+            str(row["Action"]),
+            f"{row['Quantity']:g}",
+            f"{float(price):.2f}" if price is not None else "-",
+            str(row["Source"]),
+        )
+    console.print(table)

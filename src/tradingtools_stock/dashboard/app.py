@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from tradingtools_stock.core import valuation
+from tradingtools_stock.core import trades, valuation
 from tradingtools_stock.core.config_store import (
     get_sma_1000_touch_lookback,
     set_sma_1000_touch_lookback,
@@ -11,12 +11,15 @@ from tradingtools_stock.core.config_store import (
 from tradingtools_stock.core.fetcher import (
     create_tables_if_not_exist,
     get_active_tickers,
+    get_active_tickers_with_markets,
     get_db_connection,
 )
 from tradingtools_stock.core.ibkr import (
+    fetch_executions,
     fetch_portfolio,
     get_ib_settings,
     is_api_port_open,
+    place_market_buys,
 )
 from tradingtools_stock.core.strategies import (
     fetch_dashboard_cache,
@@ -70,6 +73,57 @@ def load_data_asof(as_of_date):
 @st.cache_data(ttl=60)
 def load_portfolio():
     return fetch_portfolio()
+
+
+@st.cache_data(ttl=3600)
+def load_active_markets():
+    """Map active symbol -> market code, for resolving IBKR contracts."""
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return {
+            row["symbol"]: row["market"]
+            for row in get_active_tickers_with_markets(conn)
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60)
+def load_trades(start=None, end=None):
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return trades.fetch_trades(conn, start, end)
+    finally:
+        conn.close()
+
+
+def place_buys_and_record(orders):
+    """Place market buys via IBKR and persist each as a recorded CLI trade."""
+    results = place_market_buys(orders)
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        by_symbol = {o["symbol"]: o for o in orders}
+        for res in results:
+            if res.get("error"):
+                continue
+            spec = by_symbol.get(res["symbol"], {})
+            trades.record_trade(
+                conn,
+                res["symbol"],
+                "BUY",
+                res["quantity"],
+                price=spec.get("price"),
+                currency=res.get("currency"),
+                ib_order_id=res.get("order_id"),
+                ib_perm_id=res.get("perm_id"),
+                status=res.get("status"),
+            )
+    finally:
+        conn.close()
+    return results
 
 
 @st.cache_data(ttl=3600)
@@ -229,6 +283,7 @@ with tab1:  # noqa: SIM117
 
                 # Compare against the signals as of an earlier date (default: 1
                 # month ago). Recomputed on demand from full price history.
+                df_asof_entries = None
                 show_asof = st.toggle("Compare with an earlier date", value=True)
                 if show_asof:
                     today = pd.Timestamp.today().normalize()
@@ -265,6 +320,153 @@ with tab1:  # noqa: SIM117
                             )
                         else:
                             st.info("No active entries as of that date.")
+
+                # ---- Average buy (€150 per stock) ----
+                st.divider()
+                st.subheader("💶 Average buy")
+                st.caption(
+                    "Buy a fixed amount of each entry — both current entries "
+                    "and those from the 'as of' date above. Whole shares only "
+                    "(qty = floor(budget / price), in the stock's own "
+                    "currency). Review and uncheck before placing."
+                )
+
+                budget = st.number_input(
+                    "Budget per stock (stock currency)",
+                    min_value=1.0,
+                    value=float(trades.DEFAULT_BUDGET),
+                    step=10.0,
+                    key="buy_budget",
+                )
+                markets = load_active_markets()
+                plan = trades.build_buy_plan(
+                    df_entries, df_asof_entries, markets, budget=budget
+                )
+
+                if plan.empty:
+                    st.info("No entries available to buy.")
+                else:
+                    skipped = plan[plan["Quantity"] <= 0]
+                    plan_buyable = plan[plan["Quantity"] > 0].reset_index(drop=True)
+
+                    if not plan_buyable.empty:
+                        editor_df = plan_buyable.copy()
+                        editor_df.insert(0, "Buy", True)
+                        edited = st.data_editor(
+                            editor_df,
+                            hide_index=True,
+                            width="stretch",
+                            disabled=[
+                                c for c in editor_df.columns if c != "Buy"
+                            ],
+                            column_config={
+                                "Buy": st.column_config.CheckboxColumn(
+                                    "Buy", default=True
+                                ),
+                                "Price": st.column_config.NumberColumn(
+                                    format="%.2f"
+                                ),
+                                "Est. Cost": st.column_config.NumberColumn(
+                                    format="%.2f"
+                                ),
+                            },
+                            key="buy_plan_editor",
+                        )
+                        selected = edited[edited["Buy"]]
+                        total_cost = selected["Est. Cost"].fillna(0).sum()
+                        st.caption(
+                            f"Selected: **{len(selected)}** stocks · "
+                            f"≈ **{total_cost:,.2f}** total (each in its own "
+                            "currency)."
+                        )
+
+                        ib_host, ib_port, _ = get_ib_settings()
+                        reachable = is_api_port_open(ib_host, ib_port)
+                        live_hint = " (live trading port)" if ib_port == 4001 else ""
+                        if not reachable:
+                            st.warning(
+                                f"IB Gateway / TWS is not reachable on "
+                                f"{ib_host}:{ib_port}. Start it and log in, "
+                                "then reload."
+                            )
+                        else:
+                            st.caption(
+                                f"Orders route to the account on "
+                                f"{ib_host}:{ib_port}{live_hint}. IB Gateway's "
+                                "'Read-Only API' must be disabled."
+                            )
+
+                        confirm = st.checkbox(
+                            "I have reviewed the orders above and want to place "
+                            "them as market BUY orders.",
+                            key="buy_confirm",
+                        )
+                        if st.button(
+                            "Place market buy orders",
+                            type="primary",
+                            disabled=not (reachable and confirm and not selected.empty),
+                            key="buy_place",
+                        ):
+                            orders = [
+                                {
+                                    "symbol": r["Symbol"],
+                                    "market": r["Market"],
+                                    "quantity": int(r["Quantity"]),
+                                    "price": (
+                                        float(r["Price"])
+                                        if pd.notna(r["Price"])
+                                        else None
+                                    ),
+                                }
+                                for _, r in selected.iterrows()
+                            ]
+                            with st.spinner("Placing orders via IBKR..."):
+                                try:
+                                    results = place_buys_and_record(orders)
+                                    res_df = pd.DataFrame(results)
+                                    ok = res_df[res_df["error"].isna()]
+                                    failed = res_df[res_df["error"].notna()]
+                                    if not ok.empty:
+                                        st.success(
+                                            f"Placed {len(ok)} order(s)."
+                                        )
+                                        st.dataframe(
+                                            ok[
+                                                [
+                                                    "symbol",
+                                                    "quantity",
+                                                    "currency",
+                                                    "status",
+                                                    "order_id",
+                                                ]
+                                            ],
+                                            hide_index=True,
+                                            width="stretch",
+                                        )
+                                    if not failed.empty:
+                                        st.error(
+                                            f"{len(failed)} order(s) failed:"
+                                        )
+                                        st.dataframe(
+                                            failed[["symbol", "error"]],
+                                            hide_index=True,
+                                            width="stretch",
+                                        )
+                                    load_trades.clear()
+                                    load_portfolio.clear()
+                                except Exception as e:
+                                    st.error(f"Order placement failed: {e}")
+                    else:
+                        st.info(
+                            "No entries can be bought at this budget "
+                            "(every share costs more than the budget)."
+                        )
+
+                    if not skipped.empty:
+                        st.caption(
+                            "Skipped (share price exceeds the budget): "
+                            + ", ".join(sorted(skipped["Symbol"]))
+                        )
 
                 st.subheader(
                     f"No Entries (1000 SMA Strategy) ({len(df_no_entries_1k)})"
@@ -1080,6 +1282,95 @@ with tab5:
                     if "Weight %" in positions.columns:
                         st.subheader("Allocation (% of Net Liquidation)")
                         st.bar_chart(positions.set_index("Symbol")["Weight %"])
+
+                # ---- Trades ----
+                st.divider()
+                st.subheader("Trades")
+                st.caption(
+                    "Recorded CLI buys plus, optionally, live IBKR executions. "
+                    "Trades placed by this tool show as **CLI**; anything else "
+                    "is **Manual**."
+                )
+
+                today = pd.Timestamp.today().normalize().date()
+                default_from = (pd.Timestamp.today() - pd.Timedelta(days=30)).date()
+                tcol1, tcol2, tcol3 = st.columns([1, 1, 2])
+                with tcol1:
+                    t_from = st.date_input(
+                        "From", value=default_from, max_value=today, key="trades_from"
+                    )
+                with tcol2:
+                    t_to = st.date_input(
+                        "To", value=today, max_value=today, key="trades_to"
+                    )
+                with tcol3:
+                    include_live = st.toggle(
+                        "Include live IBKR executions (adds Manual trades)",
+                        value=False,
+                        key="trades_include_live",
+                    )
+
+                parts = []
+                rec = load_trades(t_from, t_to)
+                if not rec.empty:
+                    parts.append(
+                        rec.rename(columns={"Placed At": "Time"})[
+                            [
+                                "Time",
+                                "Symbol",
+                                "Action",
+                                "Quantity",
+                                "Price",
+                                "Currency",
+                                "Source",
+                            ]
+                        ]
+                    )
+                if include_live:
+                    try:
+                        ex = fetch_executions()
+                        if not ex.empty:
+                            ex = ex[
+                                (ex["Time"].dt.date >= t_from)
+                                & (ex["Time"].dt.date <= t_to)
+                            ]
+                            # CLI history comes from our own records; take only
+                            # the Manual executions from IBKR to avoid dupes.
+                            parts.append(
+                                ex[ex["Source"] == "Manual"][
+                                    [
+                                        "Time",
+                                        "Symbol",
+                                        "Action",
+                                        "Quantity",
+                                        "Price",
+                                        "Currency",
+                                        "Source",
+                                    ]
+                                ]
+                            )
+                    except Exception as ex_err:  # noqa: BLE001
+                        st.warning(f"Could not fetch live executions: {ex_err}")
+
+                if parts:
+                    all_trades = (
+                        pd.concat(parts, ignore_index=True)
+                        .sort_values("Time", ascending=False)
+                        .reset_index(drop=True)
+                    )
+                    st.dataframe(
+                        all_trades,
+                        column_config={
+                            "Time": st.column_config.DatetimeColumn(
+                                format="YYYY-MM-DD HH:mm"
+                            ),
+                            "Price": st.column_config.NumberColumn(format="%.2f"),
+                        },
+                        hide_index=True,
+                        width="stretch",
+                    )
+                else:
+                    st.info("No trades in the selected date range.")
 
             except Exception as e:
                 st.error(f"Error fetching IBKR portfolio: {e}")
