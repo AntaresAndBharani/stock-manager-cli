@@ -329,6 +329,7 @@ def fetch_executions(timeout: float = 15.0) -> pd.DataFrame:
                     "Currency": contract.currency,
                     "Order Ref": order_ref,
                     "Source": source,
+                    "Exec Id": getattr(ex, "execId", "") or None,
                 }
             )
         df = pd.DataFrame(
@@ -342,6 +343,7 @@ def fetch_executions(timeout: float = 15.0) -> pd.DataFrame:
                 "Currency",
                 "Order Ref",
                 "Source",
+                "Exec Id",
             ],
         )
         if not df.empty:

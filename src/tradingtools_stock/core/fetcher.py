@@ -228,6 +228,7 @@ def create_tables_if_not_exist(conn):
                 order_ref VARCHAR(50),
                 ib_order_id BIGINT,
                 ib_perm_id BIGINT,
+                ib_exec_id VARCHAR(64),
                 status VARCHAR(20),
                 source VARCHAR(10) DEFAULT 'CLI',
                 placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -235,13 +236,19 @@ def create_tables_if_not_exist(conn):
             );
             """
         )
-        # Migrate trades tables created before cash-quantity order support.
+        # Migrate trades tables created before cash-quantity orders / execution
+        # reconciliation.
         cur.execute(
             """
             ALTER TABLE trades ADD COLUMN IF NOT EXISTS cash_amount DECIMAL(18, 6);
             ALTER TABLE trades ADD COLUMN IF NOT EXISTS method VARCHAR(10);
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS ib_exec_id VARCHAR(64);
             ALTER TABLE trades ALTER COLUMN quantity DROP NOT NULL;
             """
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_exec_id "
+            "ON trades(ib_exec_id) WHERE ib_exec_id IS NOT NULL;"
         )
 
         # Create indexes

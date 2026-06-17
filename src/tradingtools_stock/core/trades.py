@@ -173,6 +173,7 @@ def ensure_trades_table(conn) -> None:
                 order_ref VARCHAR(50),
                 ib_order_id BIGINT,
                 ib_perm_id BIGINT,
+                ib_exec_id VARCHAR(64),
                 status VARCHAR(20),
                 source VARCHAR(10) DEFAULT 'CLI',
                 placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -180,18 +181,26 @@ def ensure_trades_table(conn) -> None:
             );
             """
         )
-        # Migrate tables that predate cash-quantity orders: add the new columns
-        # and relax quantity (NULL for cash orders, where shares aren't known).
+        # Migrate tables that predate cash-quantity orders / execution
+        # reconciliation: add the new columns and relax quantity (NULL for cash
+        # orders, where shares aren't known up front).
         cur.execute(
             """
             ALTER TABLE trades ADD COLUMN IF NOT EXISTS cash_amount DECIMAL(18, 6);
             ALTER TABLE trades ADD COLUMN IF NOT EXISTS method VARCHAR(10);
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS ib_exec_id VARCHAR(64);
             ALTER TABLE trades ALTER COLUMN quantity DROP NOT NULL;
             """
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_trades_placed_at "
             "ON trades(placed_at);"
+        )
+        # One row per IBKR execution: dedupe reconciled fills (NULLs allowed for
+        # CLI placement records, which have no execution id).
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_exec_id "
+            "ON trades(ib_exec_id) WHERE ib_exec_id IS NOT NULL;"
         )
         conn.commit()
 
@@ -208,6 +217,8 @@ def record_trade(
     currency: str | None = None,
     ib_order_id: int | None = None,
     ib_perm_id: int | None = None,
+    ib_exec_id: str | None = None,
+    order_ref: str = ORDER_REF,
     status: str | None = None,
     source: str = SOURCE_CLI,
 ) -> None:
@@ -223,8 +234,8 @@ def record_trade(
             """
             INSERT INTO trades
                 (symbol, action, quantity, cash_amount, method, price, currency,
-                 order_ref, ib_order_id, ib_perm_id, status, source)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 order_ref, ib_order_id, ib_perm_id, ib_exec_id, status, source)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 symbol,
@@ -234,9 +245,10 @@ def record_trade(
                 method,
                 price,
                 currency,
-                ORDER_REF,
+                order_ref,
                 ib_order_id,
                 ib_perm_id,
+                ib_exec_id,
                 status,
                 source,
             ),
@@ -246,8 +258,9 @@ def record_trade(
 
 def fetch_trades(conn, start=None, end=None) -> pd.DataFrame:
     """
-    Read recorded CLI trades, optionally filtered to a [start, end] date range
-    (inclusive). Returns columns suitable for display in the dashboard.
+    Read recorded trades, optionally filtered to a [start, end] date range
+    (inclusive). Includes CLI placements and any reconciled IBKR executions
+    (tagged ``Manual``). Returns columns suitable for display in the dashboard.
     """
     ensure_trades_table(conn)
     clauses = []
@@ -270,7 +283,8 @@ def fetch_trades(conn, start=None, end=None) -> pd.DataFrame:
             price AS "Price",
             currency AS "Currency",
             status AS "Status",
-            source AS "Source"
+            source AS "Source",
+            ib_exec_id AS "Exec Id"
         FROM trades
         {where}
         ORDER BY placed_at DESC
@@ -280,3 +294,68 @@ def fetch_trades(conn, start=None, end=None) -> pd.DataFrame:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         return pd.read_sql_query(query, conn, params=tuple(params) or None)
+
+
+def select_new_executions(
+    executions: pd.DataFrame, existing_exec_ids: set[str]
+) -> pd.DataFrame:
+    """
+    From an executions frame (as returned by ``ibkr.fetch_executions``), pick the
+    rows worth importing into the ``trades`` table: **Manual** fills (CLI buys are
+    already recorded at placement time) with an ``Exec Id`` we haven't stored yet.
+
+    Pure helper, no DB — keeps the dedup/filter logic unit-testable.
+    """
+    if executions is None or executions.empty:
+        return executions if executions is not None else pd.DataFrame()
+    mask = (
+        (executions["Source"] == SOURCE_MANUAL)
+        & executions["Exec Id"].notna()
+        & ~executions["Exec Id"].isin(existing_exec_ids)
+    )
+    return executions[mask].reset_index(drop=True)
+
+
+def reconcile_executions(conn, executions: pd.DataFrame) -> int:
+    """
+    Import new Manual IBKR executions into the ``trades`` table so they feed the
+    unified history and the "already bought this month" check. Deduped by IBKR
+    ``execId``. Returns the number of rows inserted.
+
+    CLI executions are intentionally skipped — those are recorded when the order
+    is placed, so importing them again would double-count.
+    """
+    ensure_trades_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT ib_exec_id FROM trades WHERE ib_exec_id IS NOT NULL")
+        existing = {row[0] for row in cur.fetchall()}
+
+    new_rows = select_new_executions(executions, existing)
+    if new_rows.empty:
+        return 0
+
+    inserted = 0
+    for _, row in new_rows.iterrows():
+        # Ensure the symbol exists in tickers (manual buys may include symbols
+        # not in our active universe) to satisfy the FK.
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO tickers (symbol, name, active) VALUES (%s, %s, %s) "
+                "ON CONFLICT (symbol) DO NOTHING",
+                (row["Symbol"], row["Symbol"], False),
+            )
+        record_trade(
+            conn,
+            row["Symbol"],
+            str(row["Action"]).upper()[:4],
+            quantity=float(row["Quantity"]) if pd.notna(row["Quantity"]) else None,
+            method=None,
+            price=float(row["Price"]) if pd.notna(row["Price"]) else None,
+            currency=row.get("Currency"),
+            ib_exec_id=row["Exec Id"],
+            order_ref=row.get("Order Ref") or None,
+            status="Filled",
+            source=SOURCE_MANUAL,
+        )
+        inserted += 1
+    return inserted

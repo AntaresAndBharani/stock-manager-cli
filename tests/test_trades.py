@@ -76,3 +76,37 @@ def test_build_buy_plan_accepts_symbol_column():
     plan = trades.build_buy_plan(df, None)
     assert plan.iloc[0]["Symbol"] == "AAA"
     assert plan.iloc[0]["Source"] == "current"
+
+
+def _executions():
+    return pd.DataFrame(
+        {
+            "Symbol": ["AAA", "BBB", "CCC", "DDD"],
+            "Action": ["BOT", "BOT", "BOT", "BOT"],
+            "Quantity": [10, 5, 2, 1],
+            "Price": [1.0, 2.0, 3.0, 4.0],
+            "Currency": ["USD", "EUR", "USD", "USD"],
+            "Order Ref": ["", trades.ORDER_REF, "", ""],
+            "Source": ["Manual", "CLI", "Manual", "Manual"],
+            "Exec Id": ["e1", "e2", "e3", None],
+        }
+    )
+
+
+def test_select_new_executions_filters_manual_new_with_id():
+    out = trades.select_new_executions(_executions(), existing_exec_ids={"e3"})
+    # e2 is CLI (skip), e3 already stored (skip), e4 has no exec id (skip).
+    assert list(out["Symbol"]) == ["AAA"]
+    assert list(out["Exec Id"]) == ["e1"]
+
+
+def test_select_new_executions_empty():
+    assert trades.select_new_executions(pd.DataFrame(), set()).empty
+    assert trades.select_new_executions(None, set()).empty
+
+
+def test_select_new_executions_all_known():
+    out = trades.select_new_executions(
+        _executions(), existing_exec_ids={"e1", "e3"}
+    )
+    assert out.empty

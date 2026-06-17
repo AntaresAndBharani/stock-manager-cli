@@ -13,6 +13,7 @@ def test_ibkr_help(runner: CliRunner) -> None:
     assert "gateway" in result.stdout
     assert "status" in result.stdout
     assert "trades" in result.stdout
+    assert "reconcile" in result.stdout
 
 
 def test_make_stock_contract_us_default() -> None:

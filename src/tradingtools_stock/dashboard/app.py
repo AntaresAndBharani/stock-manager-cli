@@ -138,6 +138,17 @@ def load_bought_this_month():
         conn.close()
 
 
+def reconcile_executions_now():
+    """Pull IBKR executions and import new Manual fills into the trades table."""
+    executions = fetch_executions()
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return trades.reconcile_executions(conn, executions)
+    finally:
+        conn.close()
+
+
 @st.cache_data(ttl=3600)
 def load_active_symbols():
     conn = get_db_connection()
@@ -1315,14 +1326,41 @@ with tab5:
                 st.divider()
                 st.subheader("Trades")
                 st.caption(
-                    "Recorded CLI buys plus, optionally, live IBKR executions. "
-                    "Trades placed by this tool show as **CLI**; anything else "
-                    "is **Manual**."
+                    "Recorded CLI buys plus reconciled IBKR executions. Trades "
+                    "placed by this tool show as **CLI**; anything else is "
+                    "**Manual**. Reconcile to import manual buys into the local "
+                    "history (so they also count towards 'bought this month')."
                 )
+
+                rcol1, rcol2 = st.columns([1, 3])
+                with rcol1:
+                    if st.button("Reconcile IBKR executions", key="trades_reconcile"):
+                        with st.spinner("Importing executions from IBKR..."):
+                            try:
+                                n = reconcile_executions_now()
+                                load_trades.clear()
+                                load_bought_this_month.clear()
+                                st.success(
+                                    f"Reconciled {n} new manual execution(s)."
+                                    if n
+                                    else "No new manual executions to import."
+                                )
+                            except Exception as rec_err:  # noqa: BLE001
+                                st.error(f"Reconcile failed: {rec_err}")
+                with rcol2:
+                    include_live = st.toggle(
+                        "Also show un-reconciled live executions",
+                        value=False,
+                        key="trades_include_live",
+                        help=(
+                            "Pulls fills straight from IBKR for the very recent "
+                            "ones not yet reconciled into local history."
+                        ),
+                    )
 
                 today = pd.Timestamp.today().normalize().date()
                 default_from = (pd.Timestamp.today() - pd.Timedelta(days=30)).date()
-                tcol1, tcol2, tcol3 = st.columns([1, 1, 2])
+                tcol1, tcol2 = st.columns(2)
                 with tcol1:
                     t_from = st.date_input(
                         "From", value=default_from, max_value=today, key="trades_from"
@@ -1330,12 +1368,6 @@ with tab5:
                 with tcol2:
                     t_to = st.date_input(
                         "To", value=today, max_value=today, key="trades_to"
-                    )
-                with tcol3:
-                    include_live = st.toggle(
-                        "Include live IBKR executions (adds Manual trades)",
-                        value=False,
-                        key="trades_include_live",
                     )
 
                 cols = [
@@ -1351,6 +1383,9 @@ with tab5:
                 ]
                 parts = []
                 rec = load_trades(t_from, t_to)
+                known_exec_ids = (
+                    set(rec["Exec Id"].dropna()) if not rec.empty else set()
+                )
                 if not rec.empty:
                     parts.append(
                         rec.rename(columns={"Placed At": "Time"}).reindex(columns=cols)
@@ -1363,11 +1398,13 @@ with tab5:
                                 (ex["Time"].dt.date >= t_from)
                                 & (ex["Time"].dt.date <= t_to)
                             ]
-                            # CLI history comes from our own records; take only
-                            # the Manual executions from IBKR to avoid dupes.
-                            parts.append(
-                                ex[ex["Source"] == "Manual"].reindex(columns=cols)
-                            )
+                            # Show only Manual fills not already in local history
+                            # (CLI buys are recorded at placement time).
+                            live = ex[
+                                (ex["Source"] == "Manual")
+                                & ~ex["Exec Id"].isin(known_exec_ids)
+                            ]
+                            parts.append(live.reindex(columns=cols))
                     except Exception as ex_err:  # noqa: BLE001
                         st.warning(f"Could not fetch live executions: {ex_err}")
 

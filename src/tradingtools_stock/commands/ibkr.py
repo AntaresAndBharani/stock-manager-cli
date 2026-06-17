@@ -78,6 +78,48 @@ def status():
     console.print(f"Open positions: [bold]{len(positions)}[/]")
 
 
+@app.command("reconcile")
+def reconcile():
+    """
+    Import IBKR executions into the local trades history.
+
+    Pulls recent fills from IB Gateway and records new **Manual** executions
+    (anything not placed by this tool) so they appear in the trades history and
+    count towards the dashboard's "already bought this month" check. Deduped by
+    IBKR execution id; safe to run repeatedly.
+    """
+    from tradingtools_stock.core import trades as trades_core
+    from tradingtools_stock.core.fetcher import get_db_connection
+
+    host, port, _ = ibkr_core.get_ib_settings()
+    if not ibkr_core.is_api_port_open(host, port):
+        console.print(
+            f"[bold red]No TWS/IB Gateway API listening on {host}:{port}.[/]\n"
+            "Start it with: [cyan]tradingtools-stock ibkr gateway[/]"
+        )
+        raise typer.Exit(1)
+
+    console.print(f"Fetching executions from {host}:{port}...")
+    try:
+        executions = ibkr_core.fetch_executions()
+    except Exception as e:
+        console.print(f"[bold red]Could not fetch executions: {e}[/]")
+        raise typer.Exit(1) from e
+
+    conn = get_db_connection()
+    try:
+        inserted = trades_core.reconcile_executions(conn, executions)
+    finally:
+        conn.close()
+
+    if inserted:
+        console.print(
+            f"[bold green]Reconciled {inserted} new manual execution(s).[/]"
+        )
+    else:
+        console.print("[yellow]No new manual executions to import.[/]")
+
+
 @app.command("trades")
 def trades(
     start: str | None = typer.Option(
