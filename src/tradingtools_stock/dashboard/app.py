@@ -382,8 +382,23 @@ with tab1:  # noqa: SIM117
                 if plan.empty:
                     st.info("No entries available to buy.")
                 else:
-                    editor_df = plan.drop(columns=["Est. Cost"]).copy()
+                    editor_df = plan.copy()
                     editor_df.insert(0, "Buy", True)
+                    # st.data_editor can't compute a column from another editable
+                    # one, so re-apply the grid's in-session edits to Shares here
+                    # and recompute Est. Cost so it tracks what's typed.
+                    editor_state = st.session_state.get("buy_plan_editor", {})
+                    for idx, changes in (
+                        editor_state.get("edited_rows", {}) or {}
+                    ).items():
+                        idx = int(idx)
+                        if idx in editor_df.index:
+                            for col, val in changes.items():
+                                if col in editor_df.columns:
+                                    editor_df.at[idx, col] = val
+                    editor_df["Est. Cost"] = (
+                        editor_df["Shares"] * editor_df["Price"]
+                    )
                     edited = st.data_editor(
                         editor_df,
                         hide_index=True,
@@ -407,16 +422,21 @@ with tab1:  # noqa: SIM117
                                     "Fractions allowed for partial positions."
                                 ),
                             ),
+                            "Est. Cost": st.column_config.NumberColumn(
+                                "Est. Cost (shares × price)", format="%.2f"
+                            ),
                         },
                         key="buy_plan_editor",
                     )
                     selected = edited[edited["Buy"] & (edited["Shares"] > 0)].copy()
                     selected["Est. Cost"] = selected["Shares"] * selected["Price"]
                     total_cost = selected["Est. Cost"].fillna(0).sum()
+                    mcol1, mcol2 = st.columns(2)
+                    mcol1.metric("Stocks selected", f"{len(selected)}")
+                    mcol2.metric("Total spend", f"≈ {total_cost:,.2f}")
                     st.caption(
-                        f"Selected: **{len(selected)}** stocks · "
-                        f"≈ **{total_cost:,.2f}** total "
-                        "(each in its own currency)."
+                        "Total is the sum of every selected row's "
+                        "Est. Cost; each amount is in the stock's own currency."
                     )
 
                     ib_host, ib_port, _ = get_ib_settings()
