@@ -39,7 +39,12 @@ def test_default_share_quantity(price, budget, expected):
 
 def test_build_buy_plan_union_and_source():
     current = pd.DataFrame(
-        {"Ticker": ["AAA", "BBB"], "Price": [10.0, 500.0], "Signal": ["🟢", "🟢"]}
+        {
+            "Ticker": ["AAA", "BBB"],
+            "Price": [10.0, 500.0],
+            "Signal": ["🟢", "🟢"],
+            "1000 SMA Touch Days": [3, None],
+        }
     )
     asof = pd.DataFrame(
         {"Ticker": ["BBB", "CCC"], "Price": [500.0, 50.0], "Signal": ["🟡", "🟡"]}
@@ -62,6 +67,12 @@ def test_build_buy_plan_union_and_source():
     # Markets carried through for contract resolution.
     assert plan.loc["AAA", "Market"] == "BME"
     assert plan.loc["CCC", "Market"] == "LSE"
+    # Currency derived from market (default USD when unmapped/None).
+    assert plan.loc["AAA", "Currency"] == "EUR"  # BME
+    assert plan.loc["BBB", "Currency"] == "USD"  # None -> default
+    assert plan.loc["CCC", "Currency"] == "GBP"  # LSE
+    # 1000 SMA Touch Days carried from the entry frame.
+    assert plan.loc["AAA", "1000 SMA Touch Days"] == 3
     # Estimated cost at the default quantity.
     assert plan.loc["AAA", "Est. Cost"] == pytest.approx(150.0)
     assert plan.loc["BBB", "Est. Cost"] == pytest.approx(150.0)

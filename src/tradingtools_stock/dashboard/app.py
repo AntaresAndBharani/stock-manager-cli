@@ -416,6 +416,9 @@ with tab1:  # noqa: SIM117
                                 "Buy", default=all_buy
                             ),
                             "Price": st.column_config.NumberColumn(format="%.2f"),
+                            "1000 SMA Touch Days": st.column_config.NumberColumn(
+                                format="%d d ago"
+                            ),
                             "Shares": st.column_config.NumberColumn(
                                 "Shares",
                                 min_value=0.0,
@@ -443,7 +446,14 @@ with tab1:  # noqa: SIM117
                         )
                         st.dataframe(
                             selected[
-                                ["Symbol", "Market", "Shares", "Price", "Est. Cost"]
+                                [
+                                    "Symbol",
+                                    "Market",
+                                    "Currency",
+                                    "Shares",
+                                    "Price",
+                                    "Est. Cost",
+                                ]
                             ],
                             column_config={
                                 "Price": st.column_config.NumberColumn(

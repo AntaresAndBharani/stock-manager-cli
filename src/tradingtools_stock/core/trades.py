@@ -46,8 +46,10 @@ def compute_buy_quantity(price: float | None, budget: float = DEFAULT_BUDGET) ->
 PLAN_COLUMNS = [
     "Symbol",
     "Market",
+    "Currency",
     "Signal",
     "Source",
+    "1000 SMA Touch Days",
     "Price",
     "Shares",
     "Est. Cost",
@@ -100,6 +102,8 @@ def build_buy_plan(
     Columns: see :data:`PLAN_COLUMNS`.
     """
 
+    from tradingtools_stock.core.ibkr import MARKET_TO_IB
+
     def _symbols(df: pd.DataFrame | None) -> dict[str, dict]:
         out: dict[str, dict] = {}
         if df is None or df.empty:
@@ -112,6 +116,7 @@ def build_buy_plan(
             out[str(sym)] = {
                 "Price": row.get("Price"),
                 "Signal": row.get("Signal"),
+                "Touch": row.get("1000 SMA Touch Days"),
             }
         return out
 
@@ -135,12 +140,16 @@ def build_buy_plan(
         price = info.get("Price")
         price = float(price) if price is not None and pd.notna(price) else None
         shares = default_share_quantity(price, budget)
+        market = markets.get(sym)
+        currency = MARKET_TO_IB.get((market or "").upper(), ("USD", ""))[0]
         rows.append(
             {
                 "Symbol": sym,
-                "Market": markets.get(sym),
+                "Market": market,
+                "Currency": currency,
                 "Signal": info.get("Signal"),
                 "Source": source,
+                "1000 SMA Touch Days": info.get("Touch"),
                 "Price": price,
                 "Shares": shares,
                 "Est. Cost": (shares * price) if price is not None else None,
