@@ -382,23 +382,27 @@ with tab1:  # noqa: SIM117
                 if plan.empty:
                     st.info("No entries available to buy.")
                 else:
-                    editor_df = plan.copy()
-                    editor_df.insert(0, "Buy", True)
-                    # st.data_editor can't compute a column from another editable
-                    # one, so re-apply the grid's in-session edits to Shares here
-                    # and recompute Est. Cost so it tracks what's typed.
-                    editor_state = st.session_state.get("buy_plan_editor", {})
-                    for idx, changes in (
-                        editor_state.get("edited_rows", {}) or {}
-                    ).items():
-                        idx = int(idx)
-                        if idx in editor_df.index:
-                            for col, val in changes.items():
-                                if col in editor_df.columns:
-                                    editor_df.at[idx, col] = val
-                    editor_df["Est. Cost"] = (
-                        editor_df["Shares"] * editor_df["Price"]
-                    )
+                    # Select / clear all. These set the default Buy state and
+                    # reset the grid's edit state so every row follows suit.
+                    if "buy_all_default" not in st.session_state:
+                        st.session_state["buy_all_default"] = True
+                    bcol1, bcol2, _ = st.columns([1, 1, 6])
+                    if bcol1.button("Select all", key="buy_select_all"):
+                        st.session_state["buy_all_default"] = True
+                        st.session_state.pop("buy_plan_editor", None)
+                        st.rerun()
+                    if bcol2.button("Clear all", key="buy_clear_all"):
+                        st.session_state["buy_all_default"] = False
+                        st.session_state.pop("buy_plan_editor", None)
+                        st.rerun()
+
+                    # Keep the editor's data stable across reruns — mutating it
+                    # makes st.data_editor drop edits (e.g. unchecking a second
+                    # row would re-check the first). Est. Cost is therefore
+                    # computed from the returned frame, below, not in the grid.
+                    all_buy = st.session_state["buy_all_default"]
+                    editor_df = plan.drop(columns=["Est. Cost"]).copy()
+                    editor_df.insert(0, "Buy", all_buy)
                     edited = st.data_editor(
                         editor_df,
                         hide_index=True,
@@ -409,7 +413,7 @@ with tab1:  # noqa: SIM117
                         ],
                         column_config={
                             "Buy": st.column_config.CheckboxColumn(
-                                "Buy", default=True
+                                "Buy", default=all_buy
                             ),
                             "Price": st.column_config.NumberColumn(format="%.2f"),
                             "Shares": st.column_config.NumberColumn(
@@ -422,9 +426,6 @@ with tab1:  # noqa: SIM117
                                     "Fractions allowed for partial positions."
                                 ),
                             ),
-                            "Est. Cost": st.column_config.NumberColumn(
-                                "Est. Cost (shares × price)", format="%.2f"
-                            ),
                         },
                         key="buy_plan_editor",
                     )
@@ -434,10 +435,27 @@ with tab1:  # noqa: SIM117
                     mcol1, mcol2 = st.columns(2)
                     mcol1.metric("Stocks selected", f"{len(selected)}")
                     mcol2.metric("Total spend", f"≈ {total_cost:,.2f}")
-                    st.caption(
-                        "Total is the sum of every selected row's "
-                        "Est. Cost; each amount is in the stock's own currency."
-                    )
+
+                    if not selected.empty:
+                        st.caption(
+                            "What you'll spend per stock (shares × price; each "
+                            "in the stock's own currency):"
+                        )
+                        st.dataframe(
+                            selected[
+                                ["Symbol", "Market", "Shares", "Price", "Est. Cost"]
+                            ],
+                            column_config={
+                                "Price": st.column_config.NumberColumn(
+                                    format="%.2f"
+                                ),
+                                "Est. Cost": st.column_config.NumberColumn(
+                                    "Est. Cost (shares × price)", format="%.2f"
+                                ),
+                            },
+                            hide_index=True,
+                            width="stretch",
+                        )
 
                     ib_host, ib_port, _ = get_ib_settings()
                     reachable = is_api_port_open(ib_host, ib_port)
