@@ -147,6 +147,17 @@ def reconcile_executions_now():
         conn.close()
 
 
+def _range_slider(label, series, key):
+    """A (min, max) slider for a numeric column, or None when not filterable."""
+    vals = pd.to_numeric(series, errors="coerce").dropna()
+    if vals.empty:
+        return None
+    lo, hi = float(vals.min()), float(vals.max())
+    if lo >= hi:
+        return None
+    return st.slider(label, lo, hi, (lo, hi), key=key)
+
+
 @st.cache_data(ttl=3600)
 def load_active_symbols():
     conn = get_db_connection()
@@ -379,9 +390,99 @@ with tab1:  # noqa: SIM117
                         + ", ".join(sorted(bought))
                     )
 
+                had_entries = not plan.empty
+                if had_entries:
+                    # ---- Filters (every column except Buy) ----
+                    with st.expander("🔎 Filters"):
+                        fc1, fc2, fc3 = st.columns(3)
+                        with fc1:
+                            f_symbol = (
+                                st.text_input("Symbol contains", key="buy_f_symbol")
+                                .strip()
+                                .upper()
+                            )
+                            f_market = st.multiselect(
+                                "Market",
+                                sorted(plan["Market"].dropna().unique()),
+                                key="buy_f_market",
+                            )
+                            f_currency = st.multiselect(
+                                "Currency",
+                                sorted(plan["Currency"].dropna().unique()),
+                                key="buy_f_currency",
+                            )
+                        with fc2:
+                            f_signal = st.multiselect(
+                                "Signal",
+                                sorted(plan["Signal"].dropna().unique()),
+                                key="buy_f_signal",
+                            )
+                            f_source = st.multiselect(
+                                "Source",
+                                sorted(plan["Source"].dropna().unique()),
+                                key="buy_f_source",
+                            )
+                            f_touch = st.selectbox(
+                                "1000 SMA Touch Days",
+                                ["All", "Only touched", "Only not touched"],
+                                key="buy_f_touch",
+                            )
+                        with fc3:
+                            f_price = _range_slider(
+                                "Price", plan["Price"], "buy_f_price"
+                            )
+                            f_shares = _range_slider(
+                                "Shares", plan["Shares"], "buy_f_shares"
+                            )
+                            f_cost = _range_slider(
+                                "Est. Cost", plan["Est. Cost"], "buy_f_cost"
+                            )
+
+                    mask = pd.Series(True, index=plan.index)
+                    if f_symbol:
+                        mask &= plan["Symbol"].str.upper().str.contains(
+                            f_symbol, na=False
+                        )
+                    if f_market:
+                        mask &= plan["Market"].isin(f_market)
+                    if f_currency:
+                        mask &= plan["Currency"].isin(f_currency)
+                    if f_signal:
+                        mask &= plan["Signal"].isin(f_signal)
+                    if f_source:
+                        mask &= plan["Source"].isin(f_source)
+                    if f_touch == "Only touched":
+                        mask &= plan["1000 SMA Touch Days"].notna()
+                    elif f_touch == "Only not touched":
+                        mask &= plan["1000 SMA Touch Days"].isna()
+                    if f_price:
+                        mask &= plan["Price"].between(*f_price) | plan[
+                            "Price"
+                        ].isna()
+                    if f_shares:
+                        mask &= plan["Shares"].between(*f_shares)
+                    if f_cost:
+                        mask &= plan["Est. Cost"].between(*f_cost) | plan[
+                            "Est. Cost"
+                        ].isna()
+
+                    plan = plan[mask].reset_index(drop=True)
+
                 if plan.empty:
-                    st.info("No entries available to buy.")
+                    st.info(
+                        "No stocks match the current filters."
+                        if had_entries
+                        else "No entries available to buy."
+                    )
                 else:
+                    # st.data_editor keys edits by row position, so drop them
+                    # whenever the visible rows change (e.g. a filter is applied)
+                    # to avoid edits mapping onto the wrong symbol.
+                    plan_sig = tuple(plan["Symbol"])
+                    if st.session_state.get("buy_plan_sig") != plan_sig:
+                        st.session_state["buy_plan_sig"] = plan_sig
+                        st.session_state.pop("buy_plan_editor", None)
+
                     # Select / clear all. These set the default Buy state and
                     # reset the grid's edit state so every row follows suit.
                     if "buy_all_default" not in st.session_state:
