@@ -136,7 +136,7 @@ def build_buy_plan(
         else:
             source = "as-of"
         # Prefer the live price when the symbol is a current entry.
-        info = cur.get(sym) or aso.get(sym)
+        info = cur.get(sym) or aso.get(sym) or {}
         price = info.get("Price")
         price = float(price) if price is not None and pd.notna(price) else None
         shares = default_share_quantity(price, budget)
@@ -238,7 +238,7 @@ def record_trade(
     ib_order_id: int | None = None,
     ib_perm_id: int | None = None,
     ib_exec_id: str | None = None,
-    order_ref: str = ORDER_REF,
+    order_ref: str | None = ORDER_REF,
     status: str | None = None,
     source: str = SOURCE_CLI,
 ) -> None:

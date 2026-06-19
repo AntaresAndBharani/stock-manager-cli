@@ -487,7 +487,7 @@ with tab1:  # noqa: SIM117
                     # reset the grid's edit state so every row follows suit.
                     if "buy_all_default" not in st.session_state:
                         st.session_state["buy_all_default"] = True
-                    bcol1, bcol2, _ = st.columns([1, 1, 6])
+                    bcol1, bcol2, _spacer = st.columns([1, 1, 6])
                     if bcol1.button("Select all", key="buy_select_all"):
                         st.session_state["buy_all_default"] = True
                         st.session_state.pop("buy_plan_editor", None)
