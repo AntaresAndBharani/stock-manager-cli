@@ -76,3 +76,88 @@ def status():
 
     positions = data["positions"]
     console.print(f"Open positions: [bold]{len(positions)}[/]")
+
+
+@app.command("reconcile")
+def reconcile():
+    """
+    Import IBKR executions into the local trades history.
+
+    Pulls recent fills from IB Gateway and records new **Manual** executions
+    (anything not placed by this tool) so they appear in the trades history and
+    count towards the dashboard's "already bought this month" check. Deduped by
+    IBKR execution id; safe to run repeatedly.
+    """
+    from tradingtools_stock.core import trades as trades_core
+    from tradingtools_stock.core.fetcher import get_db_connection
+
+    host, port, _ = ibkr_core.get_ib_settings()
+    if not ibkr_core.is_api_port_open(host, port):
+        console.print(
+            f"[bold red]No TWS/IB Gateway API listening on {host}:{port}.[/]\n"
+            "Start it with: [cyan]tradingtools-stock ibkr gateway[/]"
+        )
+        raise typer.Exit(1)
+
+    console.print(f"Fetching executions from {host}:{port}...")
+    try:
+        executions = ibkr_core.fetch_executions()
+    except Exception as e:
+        console.print(f"[bold red]Could not fetch executions: {e}[/]")
+        raise typer.Exit(1) from e
+
+    conn = get_db_connection()
+    try:
+        inserted = trades_core.reconcile_executions(conn, executions)
+    finally:
+        conn.close()
+
+    if inserted:
+        console.print(
+            f"[bold green]Reconciled {inserted} new manual execution(s).[/]"
+        )
+    else:
+        console.print("[yellow]No new manual executions to import.[/]")
+
+
+@app.command("trades")
+def trades(
+    start: str | None = typer.Option(
+        None, "--start", help="Earliest date (YYYY-MM-DD), inclusive."
+    ),
+    end: str | None = typer.Option(
+        None, "--end", help="Latest date (YYYY-MM-DD), inclusive."
+    ),
+):
+    """
+    List trades recorded by the CLI (the 'Average buy' action), optionally
+    filtered by date. These are persisted locally and always tagged 'CLI'.
+    """
+    from tradingtools_stock.core import trades as trades_core
+    from tradingtools_stock.core.fetcher import get_db_connection
+
+    conn = get_db_connection()
+    try:
+        df = trades_core.fetch_trades(conn, start, end)
+    finally:
+        conn.close()
+
+    if df.empty:
+        console.print("[yellow]No recorded trades for the given range.[/]")
+        return
+
+    table = Table(title="Recorded Trades")
+    for col in ["Placed At", "Symbol", "Action", "Quantity", "Price", "Source"]:
+        table.add_column(col)
+    for _, row in df.iterrows():
+        price = row["Price"]
+        qty = row["Quantity"]
+        table.add_row(
+            str(row["Placed At"]),
+            str(row["Symbol"]),
+            str(row["Action"]),
+            f"{float(qty):g}" if qty is not None else "-",
+            f"{float(price):.2f}" if price is not None else "-",
+            str(row["Source"]),
+        )
+    console.print(table)

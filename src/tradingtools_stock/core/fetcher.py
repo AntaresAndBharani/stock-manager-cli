@@ -210,6 +210,47 @@ def create_tables_if_not_exist(conn):
             """
         )
 
+        # Create trades table (CLI-placed orders, recorded so they outlive
+        # IBKR's short execution-retention window and stay tagged as 'CLI';
+        # consumed by the IBKR Portfolio dashboard tab's Trades view).
+        logging.debug("Ensuring 'trades' table exists")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trades (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(10) NOT NULL,
+                action VARCHAR(4) NOT NULL,
+                quantity DECIMAL(18, 6),
+                cash_amount DECIMAL(18, 6),
+                method VARCHAR(10),
+                price DECIMAL(18, 6),
+                currency VARCHAR(10),
+                order_ref VARCHAR(50),
+                ib_order_id BIGINT,
+                ib_perm_id BIGINT,
+                ib_exec_id VARCHAR(64),
+                status VARCHAR(20),
+                source VARCHAR(10) DEFAULT 'CLI',
+                placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (symbol) REFERENCES tickers(symbol)
+            );
+            """
+        )
+        # Migrate trades tables created before cash-quantity orders / execution
+        # reconciliation.
+        cur.execute(
+            """
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS cash_amount DECIMAL(18, 6);
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS method VARCHAR(10);
+            ALTER TABLE trades ADD COLUMN IF NOT EXISTS ib_exec_id VARCHAR(64);
+            ALTER TABLE trades ALTER COLUMN quantity DROP NOT NULL;
+            """
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_exec_id "
+            "ON trades(ib_exec_id) WHERE ib_exec_id IS NOT NULL;"
+        )
+
         # Create indexes
         logging.debug("Ensuring indexes exist")
         cur.execute(
@@ -218,6 +259,7 @@ def create_tables_if_not_exist(conn):
             CREATE INDEX IF NOT EXISTS idx_stock_prices_date ON stock_prices(date);
             CREATE INDEX IF NOT EXISTS idx_valuation_symbol
                 ON valuation_history(symbol);
+            CREATE INDEX IF NOT EXISTS idx_trades_placed_at ON trades(placed_at);
             """
         )
 

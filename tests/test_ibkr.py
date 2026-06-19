@@ -12,6 +12,24 @@ def test_ibkr_help(runner: CliRunner) -> None:
     assert result.exit_code == 0
     assert "gateway" in result.stdout
     assert "status" in result.stdout
+    assert "trades" in result.stdout
+    assert "reconcile" in result.stdout
+
+
+def test_make_stock_contract_us_default() -> None:
+    # Unknown/None market falls back to USD on SMART with no primaryExchange.
+    contract = ibkr_core._make_stock_contract("AAPL", None)
+    assert contract.symbol == "AAPL"
+    assert contract.currency == "USD"
+    assert contract.exchange == "SMART"
+    assert not contract.primaryExchange
+
+
+def test_make_stock_contract_mapped_market() -> None:
+    contract = ibkr_core._make_stock_contract("SAN", "BME")
+    assert contract.currency == "EUR"
+    assert contract.exchange == "SMART"
+    assert contract.primaryExchange == "BM"
 
 
 def test_get_ib_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

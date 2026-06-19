@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from tradingtools_stock.core import valuation
+from tradingtools_stock.core import trades, valuation
 from tradingtools_stock.core.config_store import (
     get_sma_1000_touch_lookback,
     set_sma_1000_touch_lookback,
@@ -11,12 +11,15 @@ from tradingtools_stock.core.config_store import (
 from tradingtools_stock.core.fetcher import (
     create_tables_if_not_exist,
     get_active_tickers,
+    get_active_tickers_with_markets,
     get_db_connection,
 )
 from tradingtools_stock.core.ibkr import (
+    fetch_executions,
     fetch_portfolio,
     get_ib_settings,
     is_api_port_open,
+    place_market_buys,
 )
 from tradingtools_stock.core.strategies import (
     fetch_dashboard_cache,
@@ -70,6 +73,89 @@ def load_data_asof(as_of_date):
 @st.cache_data(ttl=60)
 def load_portfolio():
     return fetch_portfolio()
+
+
+@st.cache_data(ttl=3600)
+def load_active_markets():
+    """Map active symbol -> market code, for resolving IBKR contracts."""
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return {
+            row["symbol"]: row["market"]
+            for row in get_active_tickers_with_markets(conn)
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60)
+def load_trades(start=None, end=None):
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return trades.fetch_trades(conn, start, end)
+    finally:
+        conn.close()
+
+
+def place_buys_and_record(orders):
+    """Place market buys via IBKR and persist each as a recorded CLI trade."""
+    results = place_market_buys(orders)
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        by_symbol = {o["symbol"]: o for o in orders}
+        for res in results:
+            if res.get("error"):
+                continue
+            spec = by_symbol.get(res["symbol"], {})
+            trades.record_trade(
+                conn,
+                res["symbol"],
+                "BUY",
+                res.get("quantity") or None,
+                price=spec.get("price"),
+                currency=res.get("currency"),
+                ib_order_id=res.get("order_id"),
+                ib_perm_id=res.get("perm_id"),
+                status=res.get("status"),
+            )
+    finally:
+        conn.close()
+    return results
+
+
+@st.cache_data(ttl=60)
+def load_bought_this_month():
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return trades.symbols_bought_this_month(conn)
+    finally:
+        conn.close()
+
+
+def reconcile_executions_now():
+    """Pull IBKR executions and import new Manual fills into the trades table."""
+    executions = fetch_executions()
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return trades.reconcile_executions(conn, executions)
+    finally:
+        conn.close()
+
+
+def _range_slider(label, series, key):
+    """A (min, max) slider for a numeric column, or None when not filterable."""
+    vals = pd.to_numeric(series, errors="coerce").dropna()
+    if vals.empty:
+        return None
+    lo, hi = float(vals.min()), float(vals.max())
+    if lo >= hi:
+        return None
+    return st.slider(label, lo, hi, (lo, hi), key=key)
 
 
 @st.cache_data(ttl=3600)
@@ -229,6 +315,7 @@ with tab1:  # noqa: SIM117
 
                 # Compare against the signals as of an earlier date (default: 1
                 # month ago). Recomputed on demand from full price history.
+                df_asof_entries = None
                 show_asof = st.toggle("Compare with an earlier date", value=True)
                 if show_asof:
                     today = pd.Timestamp.today().normalize()
@@ -265,6 +352,295 @@ with tab1:  # noqa: SIM117
                             )
                         else:
                             st.info("No active entries as of that date.")
+
+                # ---- Average buy ----
+                st.divider()
+                st.subheader("💶 Average buy")
+                st.caption(
+                    "Buy a fixed budget of each entry — both current entries "
+                    "and those from the 'as of' date above. **Shares** is "
+                    "pre-filled from the budget (whole shares, or a partial "
+                    "share when one share costs more than the budget) and is "
+                    "**editable** — set the exact quantity per row, then tick "
+                    "which to buy. Stocks already bought this month are hidden. "
+                    "Partial shares need fractional-share permission on the "
+                    "account and an IBKR-eligible stock."
+                )
+
+                budget = st.number_input(
+                    "Budget per stock (stock currency)",
+                    min_value=1.0,
+                    value=float(trades.DEFAULT_BUDGET),
+                    step=10.0,
+                    key="buy_budget",
+                )
+                markets = load_active_markets()
+                bought = load_bought_this_month()
+                plan = trades.build_buy_plan(
+                    df_entries,
+                    df_asof_entries,
+                    markets,
+                    budget=budget,
+                    exclude_symbols=bought,
+                )
+
+                if bought:
+                    st.caption(
+                        "Hidden (already bought this month): "
+                        + ", ".join(sorted(bought))
+                    )
+
+                had_entries = not plan.empty
+                if had_entries:
+                    # ---- Filters (every column except Buy) ----
+                    with st.expander("🔎 Filters"):
+                        fc1, fc2, fc3 = st.columns(3)
+                        with fc1:
+                            f_symbol = (
+                                st.text_input("Symbol contains", key="buy_f_symbol")
+                                .strip()
+                                .upper()
+                            )
+                            f_market = st.multiselect(
+                                "Market",
+                                sorted(plan["Market"].dropna().unique()),
+                                key="buy_f_market",
+                            )
+                            f_currency = st.multiselect(
+                                "Currency",
+                                sorted(plan["Currency"].dropna().unique()),
+                                key="buy_f_currency",
+                            )
+                        with fc2:
+                            f_signal = st.multiselect(
+                                "Signal",
+                                sorted(plan["Signal"].dropna().unique()),
+                                key="buy_f_signal",
+                            )
+                            f_source = st.multiselect(
+                                "Source",
+                                sorted(plan["Source"].dropna().unique()),
+                                key="buy_f_source",
+                            )
+                            f_touch = st.selectbox(
+                                "1000 SMA Touch Days",
+                                ["All", "Only touched", "Only not touched"],
+                                key="buy_f_touch",
+                            )
+                        with fc3:
+                            f_price = _range_slider(
+                                "Price", plan["Price"], "buy_f_price"
+                            )
+                            f_shares = _range_slider(
+                                "Shares", plan["Shares"], "buy_f_shares"
+                            )
+                            f_cost = _range_slider(
+                                "Est. Cost", plan["Est. Cost"], "buy_f_cost"
+                            )
+
+                    mask = pd.Series(True, index=plan.index)
+                    if f_symbol:
+                        mask &= plan["Symbol"].str.upper().str.contains(
+                            f_symbol, na=False
+                        )
+                    if f_market:
+                        mask &= plan["Market"].isin(f_market)
+                    if f_currency:
+                        mask &= plan["Currency"].isin(f_currency)
+                    if f_signal:
+                        mask &= plan["Signal"].isin(f_signal)
+                    if f_source:
+                        mask &= plan["Source"].isin(f_source)
+                    if f_touch == "Only touched":
+                        mask &= plan["1000 SMA Touch Days"].notna()
+                    elif f_touch == "Only not touched":
+                        mask &= plan["1000 SMA Touch Days"].isna()
+                    if f_price:
+                        mask &= plan["Price"].between(*f_price) | plan[
+                            "Price"
+                        ].isna()
+                    if f_shares:
+                        mask &= plan["Shares"].between(*f_shares)
+                    if f_cost:
+                        mask &= plan["Est. Cost"].between(*f_cost) | plan[
+                            "Est. Cost"
+                        ].isna()
+
+                    plan = plan[mask].reset_index(drop=True)
+
+                if plan.empty:
+                    st.info(
+                        "No stocks match the current filters."
+                        if had_entries
+                        else "No entries available to buy."
+                    )
+                else:
+                    # st.data_editor keys edits by row position, so drop them
+                    # whenever the visible rows change (e.g. a filter is applied)
+                    # to avoid edits mapping onto the wrong symbol.
+                    plan_sig = tuple(plan["Symbol"])
+                    if st.session_state.get("buy_plan_sig") != plan_sig:
+                        st.session_state["buy_plan_sig"] = plan_sig
+                        st.session_state.pop("buy_plan_editor", None)
+
+                    # Select / clear all. These set the default Buy state and
+                    # reset the grid's edit state so every row follows suit.
+                    if "buy_all_default" not in st.session_state:
+                        st.session_state["buy_all_default"] = True
+                    bcol1, bcol2, _spacer = st.columns([1, 1, 6])
+                    if bcol1.button("Select all", key="buy_select_all"):
+                        st.session_state["buy_all_default"] = True
+                        st.session_state.pop("buy_plan_editor", None)
+                        st.rerun()
+                    if bcol2.button("Clear all", key="buy_clear_all"):
+                        st.session_state["buy_all_default"] = False
+                        st.session_state.pop("buy_plan_editor", None)
+                        st.rerun()
+
+                    # Keep the editor's data stable across reruns — mutating it
+                    # makes st.data_editor drop edits (e.g. unchecking a second
+                    # row would re-check the first). Est. Cost is therefore
+                    # computed from the returned frame, below, not in the grid.
+                    all_buy = st.session_state["buy_all_default"]
+                    editor_df = plan.drop(columns=["Est. Cost"]).copy()
+                    editor_df.insert(0, "Buy", all_buy)
+                    edited = st.data_editor(
+                        editor_df,
+                        hide_index=True,
+                        width="stretch",
+                        disabled=[
+                            c for c in editor_df.columns
+                            if c not in ("Buy", "Shares")
+                        ],
+                        column_config={
+                            "Buy": st.column_config.CheckboxColumn(
+                                "Buy", default=all_buy
+                            ),
+                            "Price": st.column_config.NumberColumn(format="%.2f"),
+                            "1000 SMA Touch Days": st.column_config.NumberColumn(
+                                format="%d d ago"
+                            ),
+                            "Shares": st.column_config.NumberColumn(
+                                "Shares",
+                                min_value=0.0,
+                                step=0.1,
+                                format="%.4f",
+                                help=(
+                                    "Number of shares to buy — editable. "
+                                    "Fractions allowed for partial positions."
+                                ),
+                            ),
+                        },
+                        key="buy_plan_editor",
+                    )
+                    selected = edited[edited["Buy"] & (edited["Shares"] > 0)].copy()
+                    selected["Est. Cost"] = selected["Shares"] * selected["Price"]
+                    total_cost = selected["Est. Cost"].fillna(0).sum()
+                    mcol1, mcol2 = st.columns(2)
+                    mcol1.metric("Stocks selected", f"{len(selected)}")
+                    mcol2.metric("Total spend", f"≈ {total_cost:,.2f}")
+
+                    if not selected.empty:
+                        st.caption(
+                            "What you'll spend per stock (shares × price; each "
+                            "in the stock's own currency):"
+                        )
+                        st.dataframe(
+                            selected[
+                                [
+                                    "Symbol",
+                                    "Market",
+                                    "Currency",
+                                    "Shares",
+                                    "Price",
+                                    "Est. Cost",
+                                ]
+                            ],
+                            column_config={
+                                "Price": st.column_config.NumberColumn(
+                                    format="%.2f"
+                                ),
+                                "Est. Cost": st.column_config.NumberColumn(
+                                    "Est. Cost (shares × price)", format="%.2f"
+                                ),
+                            },
+                            hide_index=True,
+                            width="stretch",
+                        )
+
+                    ib_host, ib_port, _ = get_ib_settings()
+                    reachable = is_api_port_open(ib_host, ib_port)
+                    live_hint = " (live trading port)" if ib_port == 4001 else ""
+                    if not reachable:
+                        st.warning(
+                            f"IB Gateway / TWS is not reachable on "
+                            f"{ib_host}:{ib_port}. Start it and log in, "
+                            "then reload."
+                        )
+                    else:
+                        st.caption(
+                            f"Orders route to the account on "
+                            f"{ib_host}:{ib_port}{live_hint}. IB Gateway's "
+                            "'Read-Only API' must be disabled."
+                        )
+
+                    confirm = st.checkbox(
+                        "I have reviewed the orders above and want to place "
+                        "them as market BUY orders.",
+                        key="buy_confirm",
+                    )
+                    if st.button(
+                        "Place market buy orders",
+                        type="primary",
+                        disabled=not (reachable and confirm and not selected.empty),
+                        key="buy_place",
+                    ):
+                        orders = [
+                            {
+                                "symbol": r["Symbol"],
+                                "market": r["Market"],
+                                "quantity": float(r["Shares"]),
+                                "price": (
+                                    float(r["Price"])
+                                    if pd.notna(r["Price"])
+                                    else None
+                                ),
+                            }
+                            for _, r in selected.iterrows()
+                        ]
+                        with st.spinner("Placing orders via IBKR..."):
+                            try:
+                                results = place_buys_and_record(orders)
+                                res_df = pd.DataFrame(results)
+                                ok = res_df[res_df["error"].isna()]
+                                failed = res_df[res_df["error"].notna()]
+                                if not ok.empty:
+                                    st.success(f"Placed {len(ok)} order(s).")
+                                    st.dataframe(
+                                        ok[
+                                            [
+                                                "symbol",
+                                                "quantity",
+                                                "currency",
+                                                "status",
+                                                "order_id",
+                                            ]
+                                        ],
+                                        hide_index=True,
+                                        width="stretch",
+                                    )
+                                if not failed.empty:
+                                    st.error(f"{len(failed)} order(s) failed:")
+                                    st.dataframe(
+                                        failed[["symbol", "error"]],
+                                        hide_index=True,
+                                        width="stretch",
+                                    )
+                                load_trades.clear()
+                                load_portfolio.clear()
+                                load_bought_this_month.clear()
+                            except Exception as e:
+                                st.error(f"Order placement failed: {e}")
 
                 st.subheader(
                     f"No Entries (1000 SMA Strategy) ({len(df_no_entries_1k)})"
@@ -1080,6 +1456,110 @@ with tab5:
                     if "Weight %" in positions.columns:
                         st.subheader("Allocation (% of Net Liquidation)")
                         st.bar_chart(positions.set_index("Symbol")["Weight %"])
+
+                # ---- Trades ----
+                st.divider()
+                st.subheader("Trades")
+                st.caption(
+                    "Recorded CLI buys plus reconciled IBKR executions. Trades "
+                    "placed by this tool show as **CLI**; anything else is "
+                    "**Manual**. Reconcile to import manual buys into the local "
+                    "history (so they also count towards 'bought this month')."
+                )
+
+                rcol1, rcol2 = st.columns([1, 3])
+                with rcol1:
+                    if st.button("Reconcile IBKR executions", key="trades_reconcile"):
+                        with st.spinner("Importing executions from IBKR..."):
+                            try:
+                                n = reconcile_executions_now()
+                                load_trades.clear()
+                                load_bought_this_month.clear()
+                                st.success(
+                                    f"Reconciled {n} new manual execution(s)."
+                                    if n
+                                    else "No new manual executions to import."
+                                )
+                            except Exception as rec_err:  # noqa: BLE001
+                                st.error(f"Reconcile failed: {rec_err}")
+                with rcol2:
+                    include_live = st.toggle(
+                        "Also show un-reconciled live executions",
+                        value=False,
+                        key="trades_include_live",
+                        help=(
+                            "Pulls fills straight from IBKR for the very recent "
+                            "ones not yet reconciled into local history."
+                        ),
+                    )
+
+                today = pd.Timestamp.today().normalize().date()
+                default_from = (pd.Timestamp.today() - pd.Timedelta(days=30)).date()
+                tcol1, tcol2 = st.columns(2)
+                with tcol1:
+                    t_from = st.date_input(
+                        "From", value=default_from, max_value=today, key="trades_from"
+                    )
+                with tcol2:
+                    t_to = st.date_input(
+                        "To", value=today, max_value=today, key="trades_to"
+                    )
+
+                cols = [
+                    "Time",
+                    "Symbol",
+                    "Action",
+                    "Quantity",
+                    "Price",
+                    "Currency",
+                    "Source",
+                ]
+                parts = []
+                rec = load_trades(t_from, t_to)
+                known_exec_ids = (
+                    set(rec["Exec Id"].dropna()) if not rec.empty else set()
+                )
+                if not rec.empty:
+                    parts.append(
+                        rec.rename(columns={"Placed At": "Time"}).reindex(columns=cols)
+                    )
+                if include_live:
+                    try:
+                        ex = fetch_executions()
+                        if not ex.empty:
+                            ex = ex[
+                                (ex["Time"].dt.date >= t_from)
+                                & (ex["Time"].dt.date <= t_to)
+                            ]
+                            # Show only Manual fills not already in local history
+                            # (CLI buys are recorded at placement time).
+                            live = ex[
+                                (ex["Source"] == "Manual")
+                                & ~ex["Exec Id"].isin(known_exec_ids)
+                            ]
+                            parts.append(live.reindex(columns=cols))
+                    except Exception as ex_err:  # noqa: BLE001
+                        st.warning(f"Could not fetch live executions: {ex_err}")
+
+                if parts:
+                    all_trades = (
+                        pd.concat(parts, ignore_index=True)
+                        .sort_values("Time", ascending=False)
+                        .reset_index(drop=True)
+                    )
+                    st.dataframe(
+                        all_trades,
+                        column_config={
+                            "Time": st.column_config.DatetimeColumn(
+                                format="YYYY-MM-DD HH:mm"
+                            ),
+                            "Price": st.column_config.NumberColumn(format="%.2f"),
+                        },
+                        hide_index=True,
+                        width="stretch",
+                    )
+                else:
+                    st.info("No trades in the selected date range.")
 
             except Exception as e:
                 st.error(f"Error fetching IBKR portfolio: {e}")

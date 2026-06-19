@@ -35,6 +35,30 @@ SUMMARY_TAGS = [
     "MaintMarginReq",
 ]
 
+# Best-effort mapping from our internal market codes (see
+# ``fetcher.format_yahoo_ticker``) to the IBKR (currency, primaryExchange) pair.
+# Orders route via SMART; the currency + primaryExchange disambiguate the
+# contract during qualification. Symbols that fail to qualify are skipped and
+# reported rather than guessed at. ``None`` market => US listing (USD/SMART).
+MARKET_TO_IB: dict[str, tuple[str, str]] = {
+    "LSE": ("GBP", "LSE"),
+    "LSIN": ("USD", "LSE"),
+    "BME": ("EUR", "BM"),
+    "XETR": ("EUR", "IBIS"),
+    "GETTEX": ("EUR", "IBIS"),
+    "MIL": ("EUR", "BVME"),
+    "SIX": ("CHF", "EBS"),
+    "TSX": ("CAD", "TSE"),
+    "OMXSTO": ("SEK", "SFB"),
+    "EURONEXT": ("EUR", "SBF"),
+    "TSE": ("JPY", "TSEJ"),
+    "HKEX": ("HKD", "SEHK"),
+    "NSE": ("INR", "NSE"),
+    "BSE": ("INR", "BSE"),
+    "SSE": ("CNH", "SEHKNTL"),
+    "SZSE": ("CNH", "SEHKSZSE"),
+}
+
 
 def get_ib_settings() -> tuple[str, int, int]:
     """Return (host, port, client_id) for the TWS/IB Gateway API."""
@@ -168,5 +192,146 @@ def fetch_portfolio(timeout: float = 10.0) -> dict:
             ).reset_index(drop=True)
 
         return {"account": account, "summary": summary, "positions": positions}
+    finally:
+        ib.disconnect()
+
+
+def _make_stock_contract(symbol: str, market: str | None):
+    """Build an unqualified ib_async Stock contract for ``symbol``/``market``."""
+    from ib_async import Stock
+
+    currency, primary = MARKET_TO_IB.get((market or "").upper(), ("USD", ""))
+    if primary:
+        return Stock(symbol, "SMART", currency, primaryExchange=primary)
+    return Stock(symbol, "SMART", currency)
+
+
+def place_market_buys(orders: list[dict], timeout: float = 30.0) -> list[dict]:
+    """
+    Place market BUY orders on the connected account.
+
+    ``orders`` is a list of ``{"symbol", "market", "quantity"}`` dicts. The
+    quantity may be **fractional** (partial shares) for IBKR-eligible stocks —
+    used to take a position in a stock priced above the budget. Each order's
+    ``orderRef`` is tagged with :data:`trades.ORDER_REF` so it reads back as a
+    CLI trade. Connects read-write (``readonly=False``) — IB Gateway's
+    "Read-Only API" setting must be disabled.
+
+    Returns one result dict per input order with keys: symbol, quantity,
+    currency, status, order_id, perm_id, error.
+    """
+    from ib_async import IB, MarketOrder
+
+    from tradingtools_stock.core.trades import ORDER_REF
+
+    _ensure_event_loop()
+    host, port, client_id = get_ib_settings()
+
+    ib = IB()
+    ib.connect(host, port, clientId=client_id, timeout=timeout, readonly=False)
+    results: list[dict] = []
+    try:
+        for spec in orders:
+            symbol = spec["symbol"]
+            market = spec.get("market")
+            qty = float(spec.get("quantity") or 0)
+            result = {
+                "symbol": symbol,
+                "quantity": qty,
+                "currency": None,
+                "status": None,
+                "order_id": None,
+                "perm_id": None,
+                "error": None,
+            }
+            if qty <= 0:
+                result["error"] = "quantity must be positive"
+                results.append(result)
+                continue
+            try:
+                contract = _make_stock_contract(symbol, market)
+                qualified = ib.qualifyContracts(contract)
+                if not qualified:
+                    result["error"] = "could not resolve contract on IBKR"
+                    results.append(result)
+                    continue
+                contract = qualified[0]
+                result["currency"] = contract.currency
+
+                order = MarketOrder("BUY", qty)
+                order.orderRef = ORDER_REF
+                trade = ib.placeOrder(contract, order)
+                # Give the order a moment to be acknowledged so we can report a
+                # meaningful status and the broker-assigned ids.
+                ib.sleep(1.0)
+                result["status"] = trade.orderStatus.status
+                result["order_id"] = trade.order.orderId
+                result["perm_id"] = trade.order.permId or None
+            except Exception as e:  # noqa: BLE001 - surface per-order failures
+                result["error"] = str(e)
+            results.append(result)
+        return results
+    finally:
+        ib.disconnect()
+
+
+def fetch_executions(timeout: float = 15.0) -> pd.DataFrame:
+    """
+    Fetch recent executions (fills) from IBKR and tag each as CLI or Manual.
+
+    IBKR only retains executions for a short window (roughly the current
+    trading day, up to ~7 days via the API), so this complements — it does not
+    replace — the locally recorded CLI trades. Source is ``CLI`` when the
+    execution's ``orderRef`` matches :data:`trades.ORDER_REF`, else ``Manual``.
+
+    Returns columns: Time, Symbol, Action, Quantity, Price, Currency,
+    Order Ref, Source.
+    """
+    from ib_async import IB
+
+    from tradingtools_stock.core.trades import ORDER_REF, SOURCE_CLI, SOURCE_MANUAL
+
+    _ensure_event_loop()
+    host, port, client_id = get_ib_settings()
+
+    ib = IB()
+    ib.connect(host, port, clientId=client_id, timeout=timeout, readonly=True)
+    try:
+        rows = []
+        for fill in ib.fills():
+            ex = fill.execution
+            contract = fill.contract
+            order_ref = getattr(ex, "orderRef", "") or ""
+            source = SOURCE_CLI if order_ref == ORDER_REF else SOURCE_MANUAL
+            rows.append(
+                {
+                    "Time": pd.to_datetime(ex.time),
+                    "Symbol": contract.symbol,
+                    "Action": ex.side,
+                    "Quantity": ex.shares,
+                    "Price": ex.price,
+                    "Currency": contract.currency,
+                    "Order Ref": order_ref,
+                    "Source": source,
+                    "Exec Id": getattr(ex, "execId", "") or None,
+                }
+            )
+        df = pd.DataFrame(
+            rows,
+            columns=[
+                "Time",
+                "Symbol",
+                "Action",
+                "Quantity",
+                "Price",
+                "Currency",
+                "Order Ref",
+                "Source",
+                "Exec Id",
+            ],
+        )
+        if not df.empty:
+            df = df.sort_values("Time", ascending=False).reset_index(drop=True)
+        return df
     finally:
         ib.disconnect()
