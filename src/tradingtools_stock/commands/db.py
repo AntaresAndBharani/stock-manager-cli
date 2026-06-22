@@ -16,11 +16,15 @@ console = Console()
 
 @app.command("setup")
 def setup(
-    db_name: str = typer.Option("youtube_db", help="Name of the database to create"),
-    user: str = typer.Option("postgres", help="Database user"),
-    password: str = typer.Option("postgres", help="Database password"),
-    host: str = typer.Option("localhost", help="Database host"),
-    port: str = typer.Option("5432", help="Database port"),
+    db_name: str = typer.Option(
+        "stockmanager", envvar="DB_NAME", help="Name of the database to create"
+    ),
+    user: str = typer.Option("postgres", envvar="DB_USER", help="Database user"),
+    password: str = typer.Option(
+        "postgres", envvar="DB_PASS", help="Database password"
+    ),
+    host: str = typer.Option("localhost", envvar="DB_HOST", help="Database host"),
+    port: str = typer.Option("5432", envvar="DB_PORT", help="Database port"),
 ):
     """
     Setup the database and initialize tables.
