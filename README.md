@@ -48,6 +48,23 @@ $env:DB_HOST="localhost"
 $env:DB_PORT="5433"
 ```
 
+### Verify your environment
+
+Run the `setup` command to check everything in one pass — required environment
+variables, the database connection and schema, IBKR connectivity, and the
+external tools the app needs (a local PostgreSQL server, the IBKR Gateway/TWS
+client, Python dependencies):
+
+```bash
+tradingtools-stock setup            # report what is configured vs. missing
+tradingtools-stock setup --install  # additionally provision missing pieces
+```
+
+`setup` exits non-zero if any required check fails and prints how to fix each
+one. `--install` (a.k.a. `--fix`) is opt-in and never runs silently — it can
+create the database and tables and, where a package manager is available,
+install a local PostgreSQL server.
+
 ## IBKR Portfolio (IB Gateway)
 
 The dashboard's **IBKR Portfolio** tab reads your live account (positions, P&L, account summary) through the TWS API. One-time setup:
