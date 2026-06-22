@@ -16,7 +16,9 @@ def _clear_db_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_setup_help(runner: CliRunner) -> None:
     result = runner.invoke(app, ["setup", "--help"])
     assert result.exit_code == 0
-    assert "--install" in result.stdout
+    # Rich may split "--install" with ANSI styling codes (the dash is colored
+    # separately from the word), so match the option name without the dashes.
+    assert "install" in result.stdout
 
 
 def test_check_environment_missing_required() -> None:
