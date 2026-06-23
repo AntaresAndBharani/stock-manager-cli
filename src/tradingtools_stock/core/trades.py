@@ -55,6 +55,25 @@ PLAN_COLUMNS = [
     "Est. Cost",
 ]
 
+# Markets that quote prices in a minor currency unit, mapped to the divisor that
+# converts to the major unit. LSE quotes in pence (GBp); 4591 pence = 45.91 GBP.
+# Normalising here keeps share sizing, Est. Cost and the EUR conversion all in
+# the major currency.
+PENCE_MARKETS = {"LSE": 100.0}
+
+
+def normalize_price(price: float | None, market: str | None) -> float | None:
+    """
+    Convert a quoted price to the major currency unit.
+
+    LSE (and other :data:`PENCE_MARKETS`) quote in pence, so the price is
+    divided by the market's divisor; everything else is returned unchanged.
+    """
+    if price is None or not pd.notna(price):
+        return None
+    divisor = PENCE_MARKETS.get((market or "").upper(), 1.0)
+    return float(price) / divisor
+
 
 def default_share_quantity(
     price: float | None, budget: float = DEFAULT_BUDGET
@@ -135,12 +154,13 @@ def build_buy_plan(
             source = "current"
         else:
             source = "as-of"
-        # Prefer the live price when the symbol is a current entry.
+        # Prefer the live price when the symbol is a current entry. Normalise
+        # pence-quoted markets (LSE) to the major unit so sizing/cost/EUR are
+        # all consistent with the currency.
         info = cur.get(sym) or aso.get(sym) or {}
-        price = info.get("Price")
-        price = float(price) if price is not None and pd.notna(price) else None
-        shares = default_share_quantity(price, budget)
         market = markets.get(sym)
+        price = normalize_price(info.get("Price"), market)
+        shares = default_share_quantity(price, budget)
         currency = MARKET_TO_IB.get((market or "").upper(), ("USD", ""))[0]
         rows.append(
             {

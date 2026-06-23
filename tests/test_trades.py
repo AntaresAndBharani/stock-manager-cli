@@ -49,7 +49,7 @@ def test_build_buy_plan_union_and_source():
     asof = pd.DataFrame(
         {"Ticker": ["BBB", "CCC"], "Price": [500.0, 50.0], "Signal": ["🟡", "🟡"]}
     )
-    markets = {"AAA": "BME", "BBB": None, "CCC": "LSE"}
+    markets = {"AAA": "BME", "BBB": None, "CCC": "SIX"}
 
     plan = trades.build_buy_plan(current, asof, markets, budget=150.0)
     plan = plan.set_index("Symbol")
@@ -66,16 +66,46 @@ def test_build_buy_plan_union_and_source():
     assert plan.loc["CCC", "Shares"] == pytest.approx(3.0)
     # Markets carried through for contract resolution.
     assert plan.loc["AAA", "Market"] == "BME"
-    assert plan.loc["CCC", "Market"] == "LSE"
+    assert plan.loc["CCC", "Market"] == "SIX"
     # Currency derived from market (default USD when unmapped/None).
     assert plan.loc["AAA", "Currency"] == "EUR"  # BME
     assert plan.loc["BBB", "Currency"] == "USD"  # None -> default
-    assert plan.loc["CCC", "Currency"] == "GBP"  # LSE
+    assert plan.loc["CCC", "Currency"] == "CHF"  # SIX
     # 1000 SMA Touch Days carried from the entry frame.
     assert plan.loc["AAA", "1000 SMA Touch Days"] == 3
     # Estimated cost at the default quantity.
     assert plan.loc["AAA", "Est. Cost"] == pytest.approx(150.0)
     assert plan.loc["BBB", "Est. Cost"] == pytest.approx(150.0)
+
+
+@pytest.mark.parametrize(
+    "price,market,expected",
+    [
+        (4591.0, "LSE", 45.91),  # pence -> GBP
+        (4591.0, "lse", 45.91),  # case-insensitive
+        (100.0, "NYSE", 100.0),  # non-pence market unchanged
+        (100.0, None, 100.0),
+        (None, "LSE", None),
+    ],
+)
+def test_normalize_price(price, market, expected):
+    result = trades.normalize_price(price, market)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == pytest.approx(expected)
+
+
+def test_build_buy_plan_lse_pence_normalized():
+    # An LSE stock quoted at 4591 pence is £45.91; budget 150 GBP buys 3 shares.
+    current = pd.DataFrame({"Ticker": ["BATS"], "Price": [4591.0]})
+    plan = trades.build_buy_plan(
+        current, None, {"BATS": "LSE"}, budget=150.0
+    ).set_index("Symbol")
+    assert plan.loc["BATS", "Price"] == pytest.approx(45.91)
+    assert plan.loc["BATS", "Currency"] == "GBP"
+    assert plan.loc["BATS", "Shares"] == pytest.approx(3.0)
+    assert plan.loc["BATS", "Est. Cost"] == pytest.approx(137.73)
 
 
 def test_build_buy_plan_excludes_symbols():

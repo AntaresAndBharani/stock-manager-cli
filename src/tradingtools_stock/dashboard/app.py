@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from tradingtools_stock.core import trades, valuation
+from tradingtools_stock.core import fx, trades, valuation
 from tradingtools_stock.core.config_store import (
     get_sma_1000_touch_lookback,
     set_sma_1000_touch_lookback,
@@ -124,6 +124,12 @@ def place_buys_and_record(orders):
     finally:
         conn.close()
     return results
+
+
+@st.cache_data(ttl=3600)
+def load_eur_rates(currencies):
+    """Cached EUR conversion rates for the given currencies (a tuple)."""
+    return fx.get_eur_rates(currencies)
 
 
 @st.cache_data(ttl=60)
@@ -364,7 +370,8 @@ with tab1:  # noqa: SIM117
                     "**editable** — set the exact quantity per row, then tick "
                     "which to buy. Stocks already bought this month are hidden. "
                     "Partial shares need fractional-share permission on the "
-                    "account and an IBKR-eligible stock."
+                    "account and an IBKR-eligible stock. LSE prices are "
+                    "converted from pence to GBP."
                 )
 
                 budget = st.number_input(
@@ -535,15 +542,46 @@ with tab1:  # noqa: SIM117
                     )
                     selected = edited[edited["Buy"] & (edited["Shares"] > 0)].copy()
                     selected["Est. Cost"] = selected["Shares"] * selected["Price"]
-                    total_cost = selected["Est. Cost"].fillna(0).sum()
+                    # Convert each order's cost to EUR (account currency). The
+                    # broker still receives the share count — this is display
+                    # only. Rates fetched for the currencies on screen.
+                    eur_rates = load_eur_rates(
+                        tuple(sorted(plan["Currency"].dropna().unique()))
+                    )
+                    selected["Invest (€)"] = [
+                        fx.to_eur(cost, ccy, eur_rates)
+                        for cost, ccy in zip(
+                            selected["Est. Cost"],
+                            selected["Currency"],
+                            strict=False,
+                        )
+                    ]
+                    total_eur = selected["Invest (€)"].dropna().sum()
+                    missing_fx = sorted(
+                        selected.loc[
+                            selected["Invest (€)"].isna()
+                            & selected["Est. Cost"].notna(),
+                            "Currency",
+                        ]
+                        .dropna()
+                        .unique()
+                    )
+
                     mcol1, mcol2 = st.columns(2)
                     mcol1.metric("Stocks selected", f"{len(selected)}")
-                    mcol2.metric("Total spend", f"≈ {total_cost:,.2f}")
+                    mcol2.metric("Total invest (€)", f"≈ €{total_eur:,.2f}")
+                    if missing_fx:
+                        st.caption(
+                            "⚠️ No EUR rate for: "
+                            + ", ".join(missing_fx)
+                            + " — those rows are excluded from the EUR total."
+                        )
 
                     if not selected.empty:
                         st.caption(
-                            "What you'll spend per stock (shares × price; each "
-                            "in the stock's own currency):"
+                            "Per stock: shares × price in the stock's own "
+                            "currency (Est. Cost) and converted to euros "
+                            "(Invest €):"
                         )
                         st.dataframe(
                             selected[
@@ -554,6 +592,7 @@ with tab1:  # noqa: SIM117
                                     "Shares",
                                     "Price",
                                     "Est. Cost",
+                                    "Invest (€)",
                                 ]
                             ],
                             column_config={
@@ -562,6 +601,9 @@ with tab1:  # noqa: SIM117
                                 ),
                                 "Est. Cost": st.column_config.NumberColumn(
                                     "Est. Cost (shares × price)", format="%.2f"
+                                ),
+                                "Invest (€)": st.column_config.NumberColumn(
+                                    "Invest (€)", format="€%.2f"
                                 ),
                             },
                             hide_index=True,
