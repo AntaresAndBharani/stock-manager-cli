@@ -3,9 +3,11 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from tradingtools_stock.core import fx, trades, valuation
+from tradingtools_stock.core import fx, screener, trades, valuation
 from tradingtools_stock.core.config_store import (
+    get_screener_thresholds,
     get_sma_1000_touch_lookback,
+    set_screener_thresholds,
     set_sma_1000_touch_lookback,
 )
 from tradingtools_stock.core.fetcher import (
@@ -174,6 +176,16 @@ def load_active_symbols():
         conn.close()
 
 
+@st.cache_data(ttl=60)
+def load_screener_thresholds():
+    conn = get_db_connection()
+    try:
+        create_tables_if_not_exist(conn)
+        return get_screener_thresholds(conn)
+    finally:
+        conn.close()
+
+
 @st.cache_data(ttl=3600)
 def load_latest_valuation():
     conn = get_db_connection()
@@ -202,12 +214,13 @@ def load_sector_valuation_history(sector):
         conn.close()
 
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+tab1, tab2, tab3, tab4, tab7, tab5, tab6 = st.tabs(
     [
         "Dashboard",
         "Backtesting",
         "Sector & Industry Analysis",
         "Valuation",
+        "Screener",
         "IBKR Portfolio",
         "Admin",
     ]
@@ -1400,6 +1413,114 @@ with tab4:  # noqa: SIM117
         except Exception as e:
             st.error(f"Error loading valuation data: {e}")
 
+with tab7:
+    st.header("Screener")
+    st.markdown(
+        "Combine sector technical health with stock fundamentals to surface "
+        "trade entries, ranked by a 1–100 confidence score. Pick a strategy, "
+        "then click a qualifying sector to filter the table. Thresholds are set "
+        "in the Admin tab."
+    )
+
+    strategy = st.radio(
+        "Strategy",
+        options=list(screener.STRATEGY_LABELS),
+        format_func=lambda s: screener.STRATEGY_LABELS[s],
+        horizontal=True,
+        key="screener_strategy",
+    )
+    if strategy == screener.EARLY_ROTATION:
+        st.caption(
+            "**Early Rotation** — accelerating momentum: sector breadth ≥ "
+            "min, 1M HA-green ≥ min, Forward P/E ≤ max, PEG ≤ max, signal "
+            "Strong or Weak."
+        )
+    else:
+        st.caption(
+            "**Trend Pullback** — leaders in temporary weakness: sector RS ≥ "
+            "min, breadth ≥ min, 1M HA-green ≤ max, Forward P/E < Trailing "
+            "P/E, PEG ≤ max, Strong signal only."
+        )
+
+    with st.spinner("Screening..."):
+        try:
+            df_screen = load_data()
+            valuation_latest = load_latest_valuation()
+            thresholds = load_screener_thresholds()
+
+            if df_screen.empty:
+                st.warning("No dashboard data. Fetch stock data first.")
+            elif valuation_latest.empty:
+                st.warning(
+                    "No valuation data. Populate it with "
+                    "`tradingtools-stock fetch valuation`."
+                )
+            else:
+                result, sectors_agg, qualifying = screener.screen(
+                    df_screen, valuation_latest, strategy, thresholds
+                )
+
+                left, right = st.columns([1, 4])
+                with left:
+                    st.subheader("Sectors")
+                    if qualifying:
+                        sector_choice = st.radio(
+                            "Qualifying",
+                            options=["All"] + qualifying,
+                            key="screener_sector_choice",
+                            label_visibility="collapsed",
+                        )
+                    else:
+                        sector_choice = "All"
+                        st.info("No sectors pass the macro filters.")
+
+                with right:
+                    table = result
+                    if sector_choice != "All":
+                        table = result[result["Sector"] == sector_choice]
+                    st.subheader(f"Entries ({len(table)})")
+                    if table.empty:
+                        st.info("No tickers pass this strategy's filters.")
+                    else:
+                        st.dataframe(
+                            table,
+                            column_config={
+                                "RS": st.column_config.NumberColumn(
+                                    "RS (% vs 200)", format="%+.1f%%"
+                                ),
+                                "Breadth": st.column_config.NumberColumn(
+                                    format="%.0f%%"
+                                ),
+                                "HA Green": st.column_config.NumberColumn(
+                                    "1M HA Green", format="%.0f%%"
+                                ),
+                                "Forward P/E": st.column_config.NumberColumn(
+                                    format="%.1f"
+                                ),
+                                "Trailing P/E": st.column_config.NumberColumn(
+                                    format="%.1f"
+                                ),
+                                "PEG": st.column_config.NumberColumn(
+                                    format="%.2f"
+                                ),
+                                "Confidence": st.column_config.ProgressColumn(
+                                    "Confidence",
+                                    format="%d",
+                                    min_value=0,
+                                    max_value=100,
+                                ),
+                            },
+                            hide_index=True,
+                            width="stretch",
+                        )
+                        st.caption(
+                            "Confidence = Fundamental (PEG + earnings "
+                            "acceleration) 50 + Macro (breadth + strategy "
+                            "match) 50."
+                        )
+        except Exception as e:
+            st.error(f"Error running screener: {e}")
+
 with tab5:
     st.header("IBKR Portfolio")
 
@@ -1650,3 +1771,73 @@ with tab6:
             )
     except Exception as e:
         st.error(f"Error loading admin settings: {e}")
+
+    st.divider()
+    st.subheader("Screener thresholds")
+    st.caption("Filter thresholds for the Screener tab's two strategies.")
+
+    try:
+        thresholds = load_screener_thresholds()
+        er = thresholds[screener.EARLY_ROTATION]
+        tp = thresholds[screener.TREND_PULLBACK]
+
+        st.markdown("**Early Rotation**")
+        er1, er2, er3, er4 = st.columns(4)
+        er_breadth = er1.number_input(
+            "Breadth ≥ (%)", 0.0, 100.0, float(er["breadth_min"]), 1.0,
+            key="er_breadth",
+        )
+        er_ha = er2.number_input(
+            "1M HA-green ≥ (%)", 0.0, 100.0, float(er["ha_green_min"]), 1.0,
+            key="er_ha",
+        )
+        er_fpe = er3.number_input(
+            "Forward P/E ≤", 0.0, 500.0, float(er["forward_pe_max"]), 0.5,
+            key="er_fpe",
+        )
+        er_peg = er4.number_input(
+            "PEG ≤", 0.0, 20.0, float(er["peg_max"]), 0.1, key="er_peg"
+        )
+
+        st.markdown("**Trend Pullback**")
+        tp1, tp2, tp3, tp4 = st.columns(4)
+        tp_rs = tp1.number_input(
+            "RS ≥ (% vs 200)", -100.0, 100.0, float(tp["rs_min"]), 0.5,
+            key="tp_rs",
+        )
+        tp_breadth = tp2.number_input(
+            "Breadth ≥ (%)", 0.0, 100.0, float(tp["breadth_min"]), 1.0,
+            key="tp_breadth",
+        )
+        tp_ha = tp3.number_input(
+            "1M HA-green ≤ (%)", 0.0, 100.0, float(tp["ha_green_max"]), 1.0,
+            key="tp_ha",
+        )
+        tp_peg = tp4.number_input(
+            "PEG ≤", 0.0, 20.0, float(tp["peg_max"]), 0.1, key="tp_peg"
+        )
+
+        if st.button("Save screener thresholds"):
+            new_thresholds = {
+                screener.EARLY_ROTATION: {
+                    "breadth_min": er_breadth,
+                    "ha_green_min": er_ha,
+                    "forward_pe_max": er_fpe,
+                    "peg_max": er_peg,
+                },
+                screener.TREND_PULLBACK: {
+                    "rs_min": tp_rs,
+                    "breadth_min": tp_breadth,
+                    "ha_green_max": tp_ha,
+                    "peg_max": tp_peg,
+                },
+            }
+            conn = get_db_connection()
+            try:
+                set_screener_thresholds(conn, new_thresholds)
+            finally:
+                conn.close()
+            load_screener_thresholds.clear()
+            st.success("Saved screener thresholds.")
+    except Exception as e:
+        st.error(f"Error loading screener settings: {e}")
