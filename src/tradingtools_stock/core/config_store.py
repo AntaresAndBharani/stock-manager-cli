@@ -6,10 +6,14 @@ that values changed from the dashboard's Admin section survive process
 restarts and are picked up on the next execution.
 """
 
+import contextlib
+import json
+
 from tradingtools_stock.core.strategies import SMA_1000_TOUCH_LOOKBACK_DAYS
 
 # Config keys
 KEY_SMA_1000_TOUCH_LOOKBACK = "sma_1000_touch_lookback_days"
+KEY_SCREENER_THRESHOLDS = "screener_thresholds"
 
 # Fallback used when no value has been persisted yet. Mirrors the module-level
 # default in ``strategies`` so behaviour is identical before any admin change.
@@ -72,3 +76,29 @@ def get_sma_1000_touch_lookback(conn):
 def set_sma_1000_touch_lookback(conn, days):
     """Persist the 1000-day SMA touch lookback (positive integer days)."""
     set_config(conn, KEY_SMA_1000_TOUCH_LOOKBACK, int(days))
+
+
+def get_screener_thresholds(conn):
+    """Return screener filter thresholds, merging any stored overrides onto the
+    defaults so new keys always have a value."""
+    from tradingtools_stock.core.screener import DEFAULT_THRESHOLDS
+
+    merged = {strat: dict(vals) for strat, vals in DEFAULT_THRESHOLDS.items()}
+    raw = get_config(conn, KEY_SCREENER_THRESHOLDS)
+    if raw:
+        try:
+            stored = json.loads(raw)
+        except (ValueError, TypeError):
+            stored = {}
+        for strat, vals in (stored or {}).items():
+            if strat in merged and isinstance(vals, dict):
+                for key, value in vals.items():
+                    if key in merged[strat]:
+                        with contextlib.suppress(TypeError, ValueError):
+                            merged[strat][key] = float(value)
+    return merged
+
+
+def set_screener_thresholds(conn, thresholds):
+    """Persist screener filter thresholds (stored as JSON)."""
+    set_config(conn, KEY_SCREENER_THRESHOLDS, json.dumps(thresholds))
